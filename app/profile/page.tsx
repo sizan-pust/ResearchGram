@@ -36,7 +36,7 @@ export default function ProfilePage() {
         const { data: authData, error: authError } = await supabase.auth.getUser()
 
         if (authError || !authData.user) {
-          router.push('/login')
+          router.push('/auth/login')
           return
         }
 
@@ -181,7 +181,7 @@ export default function ProfilePage() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
-    router.push('/login')
+router.push('/auth/login')
   }
 
   if (loading) {
@@ -195,8 +195,41 @@ export default function ProfilePage() {
     )
   }
 
-  return (
-    <main className="min-h-screen bg-gray-50">
+return (
+  <main className="min-h-screen bg-gray-50">
+    <nav className="sticky top-0 z-50 border-b border-gray-200 bg-white/90 backdrop-blur">
+      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
+        <button
+          onClick={() => router.push('/')}
+          className="text-xl font-bold text-gray-950"
+        >
+          ResearchGram
+        </button>
+
+        <div className="flex items-center gap-2 text-sm">
+          <button
+            onClick={() => router.push('/feed')}
+            className="rounded-full px-4 py-2 font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-950"
+          >
+            Feed
+          </button>
+
+          <button
+            onClick={() => router.push('/profile')}
+            className="rounded-full bg-blue-50 px-4 py-2 font-semibold text-blue-700"
+          >
+            Profile
+          </button>
+
+          <button
+            onClick={handleLogout}
+            className="rounded-full px-4 py-2 font-medium text-red-600 transition hover:bg-red-50"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+    </nav>
       {/* Cover Photo Section */}
       <div className="relative bg-white">
         {/* Cover Photo */}

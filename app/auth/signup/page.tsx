@@ -7,33 +7,110 @@ import { supabase } from '@/lib/supabase'
 
 export default function SignUpPage() {
   const router = useRouter()
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [fullName, setFullName] = useState('')
+  const [department, setDepartment] = useState('')
+  const [skills, setSkills] = useState('')
+
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
 
   const handleSignUp = async () => {
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-    })
+    setMessage('')
 
-    if (error) {
-      alert(error.message)
+    if (!fullName.trim()) {
+      setMessage('Please enter your full name.')
       return
     }
 
-    alert('Signup successful. Now login.')
-    router.push('/auth/login')
+    if (!email.trim()) {
+      setMessage('Please enter your email.')
+      return
+    }
+
+    if (!password.trim()) {
+      setMessage('Please enter your password.')
+      return
+    }
+
+    if (password.length < 6) {
+      setMessage('Password must be at least 6 characters.')
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      console.log('Trying signup with:', email)
+
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+      })
+
+      console.log('Signup data:', data)
+      console.log('Signup error:', error)
+
+      if (error) {
+        setMessage(`Signup failed: ${error.message}`)
+        return
+      }
+
+      if (!data.user) {
+        setMessage('Signup did not return a user. Check Supabase Auth settings.')
+        return
+      }
+
+      const { error: profileError } = await supabase.from('profiles').insert({
+        id: data.user.id,
+        email: email.trim(),
+        full_name: fullName.trim(),
+        department: department.trim(),
+        skills: skills.trim(),
+      })
+
+      console.log('Profile insert error:', profileError)
+
+      if (profileError) {
+        setMessage(`Auth user created, but profile was not saved: ${profileError.message}`)
+        return
+      }
+
+      setMessage('Signup successful. Redirecting to login...')
+
+      setTimeout(() => {
+        router.push('/auth/login')
+      }, 800)
+    } catch (err) {
+      console.error('Unexpected signup error:', err)
+      setMessage('Unexpected signup error. Check browser console.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-lg">
         <h1 className="text-3xl font-bold text-gray-900">Sign Up</h1>
+        <p className="mt-2 text-sm text-gray-600">
+          Create your ResearchGram academic profile.
+        </p>
 
         <div className="mt-6 space-y-4">
           <input
             className="w-full rounded-xl border p-3 outline-none focus:border-black"
+            placeholder="Full name"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+          />
+
+          <input
+            className="w-full rounded-xl border p-3 outline-none focus:border-black"
             placeholder="Email"
+            type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
@@ -41,16 +118,37 @@ export default function SignUpPage() {
           <input
             className="w-full rounded-xl border p-3 outline-none focus:border-black"
             type="password"
-            placeholder="Password"
+            placeholder="Password, minimum 6 characters"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
 
+          <input
+            className="w-full rounded-xl border p-3 outline-none focus:border-black"
+            placeholder="Department, e.g. CSE"
+            value={department}
+            onChange={(e) => setDepartment(e.target.value)}
+          />
+
+          <input
+            className="w-full rounded-xl border p-3 outline-none focus:border-black"
+            placeholder="Skills, e.g. AI, Machine Learning, Java"
+            value={skills}
+            onChange={(e) => setSkills(e.target.value)}
+          />
+
+          {message && (
+            <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              {message}
+            </p>
+          )}
+
           <button
             onClick={handleSignUp}
-            className="w-full rounded-xl bg-black py-3 text-white hover:bg-gray-800"
+            disabled={loading}
+            className="w-full rounded-xl bg-black py-3 text-white hover:bg-gray-800 disabled:opacity-60"
           >
-            Create Account
+            {loading ? 'Creating account...' : 'Create Account'}
           </button>
         </div>
 
