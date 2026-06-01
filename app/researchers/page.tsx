@@ -356,13 +356,37 @@ export default function ResearchersPage() {
 
                           <button
                             onClick={() =>
-                              alert(
-                                "Mentorship and direct profile connection requests will be added soon.",
-                              )
+                              handleSendConnectionRequest(profile.id)
                             }
-                            className="rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100"
+                            disabled={
+                              connectingId === profile.id ||
+                              connectionStatusMap[profile.id] === "requested" ||
+                              connectionStatusMap[profile.id] === "connected" ||
+                              connectionStatusMap[profile.id] === "received"
+                            }
+                            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-70 ${
+                              connectionStatusMap[profile.id] === "connected"
+                                ? "bg-green-50 text-green-700"
+                                : connectionStatusMap[profile.id] ===
+                                    "requested"
+                                  ? "bg-yellow-50 text-yellow-700"
+                                  : connectionStatusMap[profile.id] ===
+                                      "received"
+                                    ? "bg-purple-50 text-purple-700"
+                                    : "bg-blue-50 text-blue-700 hover:bg-blue-100"
+                            }`}
                           >
-                            Connect
+                            {connectingId === profile.id
+                              ? "Sending..."
+                              : connectionStatusMap[profile.id] === "connected"
+                                ? "Connected"
+                                : connectionStatusMap[profile.id] ===
+                                    "requested"
+                                  ? "Requested"
+                                  : connectionStatusMap[profile.id] ===
+                                      "received"
+                                    ? "Respond in Requests"
+                                    : "Connect"}
                           </button>
                         </>
                       )}
