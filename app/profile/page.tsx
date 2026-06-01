@@ -1,165 +1,181 @@
-'use client'
+"use client";
 
-import { useEffect, useState, useRef } from 'react'
-import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { useEffect, useState, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
+import AppNav from "@/components/AppNav";
 
-const PROFILE_BUCKET = 'profile-avatars'
+const PROFILE_BUCKET = "profile-avatars";
 
 export default function ProfilePage() {
-  const router = useRouter()
-  const profileFileInputRef = useRef<HTMLInputElement>(null)
-  const coverFileInputRef = useRef<HTMLInputElement>(null)
+  const router = useRouter();
+  const profileFileInputRef = useRef<HTMLInputElement>(null);
+  const coverFileInputRef = useRef<HTMLInputElement>(null);
 
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [editMode, setEditMode] = useState(false)
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [editMode, setEditMode] = useState(false);
 
-  const [userId, setUserId] = useState('')
-  const [email, setEmail] = useState('')
-  const [name, setName] = useState('')
-  const [dept, setDept] = useState('')
-  const [skills, setSkills] = useState('')
-  const [interests, setInterests] = useState('')
-  const [bio, setBio] = useState('')
-  const [profilePicUrl, setProfilePicUrl] = useState('')
-  const [coverPhotoUrl, setCoverPhotoUrl] = useState('')
-  const [previewProfileUrl, setPreviewProfileUrl] = useState('')
-  const [previewCoverUrl, setPreviewCoverUrl] = useState('')
-  const [profilePicFile, setProfilePicFile] = useState<File | null>(null)
-  const [coverPhotoFile, setCoverPhotoFile] = useState<File | null>(null)
+  const [userId, setUserId] = useState("");
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [dept, setDept] = useState("");
+  const [skills, setSkills] = useState("");
+  const [interests, setInterests] = useState("");
+  const [bio, setBio] = useState("");
+  const [profilePicUrl, setProfilePicUrl] = useState("");
+  const [coverPhotoUrl, setCoverPhotoUrl] = useState("");
+  const [previewProfileUrl, setPreviewProfileUrl] = useState("");
+  const [previewCoverUrl, setPreviewCoverUrl] = useState("");
+  const [profilePicFile, setProfilePicFile] = useState<File | null>(null);
+  const [coverPhotoFile, setCoverPhotoFile] = useState<File | null>(null);
 
   useEffect(() => {
     const loadProfile = async () => {
       try {
-        const { data: authData, error: authError } = await supabase.auth.getUser()
+        const { data: authData, error: authError } =
+          await supabase.auth.getUser();
 
         if (authError || !authData.user) {
-          router.push('/auth/login')
-          return
+          router.push("/auth/login");
+          return;
         }
 
-        const user = authData.user
-        setUserId(user.id)
-        setEmail(user.email ?? '')
+        const user = authData.user;
+        setUserId(user.id);
+        setEmail(user.email ?? "");
 
         const { data: profileData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', user.id)
-          .single()
+          .from("profiles")
+          .select("*")
+          .eq("id", user.id)
+          .single();
 
         if (profileData) {
-          setName(profileData.full_name ?? '')
-          setDept(profileData.department ?? '')
-          setSkills(profileData.skills ?? '')
-          setInterests(profileData.interests ?? '')
-          setBio(profileData.bio ?? '')
-          setProfilePicUrl(profileData.profile_pic_url ?? '')
-          setCoverPhotoUrl(profileData.cover_photo_url ?? '')
+          setName(profileData.full_name ?? "");
+          setDept(profileData.department ?? "");
+          setSkills(profileData.skills ?? "");
+          setInterests(profileData.interests ?? "");
+          setBio(profileData.bio ?? "");
+          setProfilePicUrl(profileData.profile_pic_url ?? "");
+          setCoverPhotoUrl(profileData.cover_photo_url ?? "");
         }
 
-        setLoading(false)
+        setLoading(false);
       } catch (error) {
-        console.error('Error loading profile:', error)
-        setLoading(false)
+        console.error("Error loading profile:", error);
+        setLoading(false);
       }
-    }
+    };
 
-    loadProfile()
-  }, [router])
+    loadProfile();
+  }, [router]);
 
   const handleProfilePicSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+    const file = e.target.files?.[0];
     if (file) {
-      setProfilePicFile(file)
-      const reader = new FileReader()
+      setProfilePicFile(file);
+      const reader = new FileReader();
       reader.onload = (event) => {
-        setPreviewProfileUrl(event.target?.result as string)
-      }
-      reader.readAsDataURL(file)
+        setPreviewProfileUrl(event.target?.result as string);
+      };
+      reader.readAsDataURL(file);
     }
-  }
+  };
 
   const handleCoverPhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+    const file = e.target.files?.[0];
     if (file) {
-      setCoverPhotoFile(file)
-      const reader = new FileReader()
+      setCoverPhotoFile(file);
+      const reader = new FileReader();
       reader.onload = (event) => {
-        setPreviewCoverUrl(event.target?.result as string)
-      }
-      reader.readAsDataURL(file)
+        setPreviewCoverUrl(event.target?.result as string);
+      };
+      reader.readAsDataURL(file);
     }
-  }
+  };
 
   const uploadFile = async (file: File, folder: string, fileName: string) => {
-    const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg'
-    const filePath = `${folder}/${fileName}.${ext}`
+    const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+    const filePath = `${folder}/${fileName}.${ext}`;
 
     const { error: uploadError } = await supabase.storage
       .from(PROFILE_BUCKET)
-      .upload(filePath, file, { cacheControl: '3600', upsert: false })
+      .upload(filePath, file, { cacheControl: "3600", upsert: false });
 
-    if (uploadError) throw new Error(uploadError.message)
+    if (uploadError) throw new Error(uploadError.message);
 
-    const { data } = supabase.storage.from(PROFILE_BUCKET).getPublicUrl(filePath)
-    return data.publicUrl
-  }
+    const { data } = supabase.storage
+      .from(PROFILE_BUCKET)
+      .getPublicUrl(filePath);
+    return data.publicUrl;
+  };
 
   const handleUploadProfilePic = async () => {
-    if (!profilePicFile || !userId) return
+    if (!profilePicFile || !userId) return;
 
-    setUploading(true)
+    setUploading(true);
     try {
-      const url = await uploadFile(profilePicFile, userId, `profile-${Date.now()}`)
-      setProfilePicUrl(url)
-      setProfilePicFile(null)
-      setPreviewProfileUrl('')
+      const url = await uploadFile(
+        profilePicFile,
+        userId,
+        `profile-${Date.now()}`,
+      );
+      setProfilePicUrl(url);
+      setProfilePicFile(null);
+      setPreviewProfileUrl("");
 
       const { error } = await supabase
-        .from('profiles')
+        .from("profiles")
         .update({ profile_pic_url: url })
-        .eq('id', userId)
+        .eq("id", userId);
 
-      if (error) throw error
-      alert('Profile picture updated!')
+      if (error) throw error;
+      alert("Profile picture updated!");
     } catch (error) {
-      alert('Error: ' + (error instanceof Error ? error.message : 'Unknown error'))
+      alert(
+        "Error: " + (error instanceof Error ? error.message : "Unknown error"),
+      );
     } finally {
-      setUploading(false)
+      setUploading(false);
     }
-  }
+  };
 
   const handleUploadCover = async () => {
-    if (!coverPhotoFile || !userId) return
+    if (!coverPhotoFile || !userId) return;
 
-    setUploading(true)
+    setUploading(true);
     try {
-      const url = await uploadFile(coverPhotoFile, userId, `cover-${Date.now()}`)
-      setCoverPhotoUrl(url)
-      setCoverPhotoFile(null)
-      setPreviewCoverUrl('')
+      const url = await uploadFile(
+        coverPhotoFile,
+        userId,
+        `cover-${Date.now()}`,
+      );
+      setCoverPhotoUrl(url);
+      setCoverPhotoFile(null);
+      setPreviewCoverUrl("");
 
       const { error } = await supabase
-        .from('profiles')
+        .from("profiles")
         .update({ cover_photo_url: url })
-        .eq('id', userId)
+        .eq("id", userId);
 
-      if (error) throw error
-      alert('Cover photo updated!')
+      if (error) throw error;
+      alert("Cover photo updated!");
     } catch (error) {
-      alert('Error: ' + (error instanceof Error ? error.message : 'Unknown error'))
+      alert(
+        "Error: " + (error instanceof Error ? error.message : "Unknown error"),
+      );
     } finally {
-      setUploading(false)
+      setUploading(false);
     }
-  }
+  };
 
   const handleSave = async () => {
-    setSaving(true)
+    setSaving(true);
     try {
-      const { error } = await supabase.from('profiles').upsert({
+      const { error } = await supabase.from("profiles").upsert({
         id: userId,
         email,
         full_name: name,
@@ -167,22 +183,24 @@ export default function ProfilePage() {
         skills,
         interests,
         bio,
-      })
+      });
 
-      if (error) throw error
-      alert('Profile saved!')
-      setEditMode(false)
+      if (error) throw error;
+      alert("Profile saved!");
+      setEditMode(false);
     } catch (error) {
-      alert('Error: ' + (error instanceof Error ? error.message : 'Unknown error'))
+      alert(
+        "Error: " + (error instanceof Error ? error.message : "Unknown error"),
+      );
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
-  }
+  };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
-router.push('/auth/login')
-  }
+    await supabase.auth.signOut();
+    router.push("/auth/login");
+  };
 
   if (loading) {
     return (
@@ -192,44 +210,12 @@ router.push('/auth/login')
           <p className="text-lg text-gray-600">Loading profile...</p>
         </div>
       </main>
-    )
+    );
   }
 
-return (
-  <main className="min-h-screen bg-gray-50">
-    <nav className="sticky top-0 z-50 border-b border-gray-200 bg-white/90 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-        <button
-          onClick={() => router.push('/')}
-          className="text-xl font-bold text-gray-950"
-        >
-          ResearchGram
-        </button>
-
-        <div className="flex items-center gap-2 text-sm">
-          <button
-            onClick={() => router.push('/feed')}
-            className="rounded-full px-4 py-2 font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-950"
-          >
-            Feed
-          </button>
-
-          <button
-            onClick={() => router.push('/profile')}
-            className="rounded-full bg-blue-50 px-4 py-2 font-semibold text-blue-700"
-          >
-            Profile
-          </button>
-
-          <button
-            onClick={handleLogout}
-            className="rounded-full px-4 py-2 font-medium text-red-600 transition hover:bg-red-50"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
-    </nav>
+  return (
+    <main className="min-h-screen bg-gray-50">
+      <AppNav activePage="profile" />
       {/* Cover Photo Section */}
       <div className="relative bg-white">
         {/* Cover Photo */}
@@ -265,7 +251,7 @@ return (
               disabled={uploading}
               className="absolute bottom-16 right-4 rounded-full bg-green-600 px-4 py-2 font-semibold text-white shadow-lg transition hover:bg-green-700 disabled:opacity-50"
             >
-              {uploading ? 'Uploading...' : 'Save Cover'}
+              {uploading ? "Uploading..." : "Save Cover"}
             </button>
           )}
         </div>
@@ -313,15 +299,19 @@ return (
                     disabled={uploading}
                     className="absolute -bottom-12 right-0 rounded-lg bg-green-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-green-700 disabled:opacity-50"
                   >
-                    {uploading ? 'Uploading...' : 'Save'}
+                    {uploading ? "Uploading..." : "Save"}
                   </button>
                 )}
               </div>
 
               {/* Name & Title */}
               <div className="flex-1">
-                <h1 className="text-4xl font-bold text-gray-900">{name || 'Your Name'}</h1>
-                <p className="mt-1 text-lg text-gray-600">{dept || 'Your Department'}</p>
+                <h1 className="text-4xl font-bold text-gray-900">
+                  {name || "Your Name"}
+                </h1>
+                <p className="mt-1 text-lg text-gray-600">
+                  {dept || "Your Department"}
+                </p>
                 <p className="mt-2 text-sm text-gray-500">{email}</p>
               </div>
 
@@ -334,7 +324,7 @@ return (
                       disabled={saving}
                       className="rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
                     >
-                      {saving ? 'Saving...' : 'Save'}
+                      {saving ? "Saving..." : "Save"}
                     </button>
                     <button
                       onClick={() => setEditMode(false)}
@@ -375,36 +365,46 @@ return (
               <div className="space-y-4">
                 <div>
                   <p className="text-sm font-semibold text-gray-600">BIO</p>
-                  <p className="mt-1 text-gray-900">{bio || 'No bio added yet'}</p>
+                  <p className="mt-1 text-gray-900">
+                    {bio || "No bio added yet"}
+                  </p>
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-gray-600">EXPERTISE</p>
+                  <p className="text-sm font-semibold text-gray-600">
+                    EXPERTISE
+                  </p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {skills
-                      ? skills.split(',').map((skill, idx) => (
-                          <span
-                            key={idx}
-                            className="rounded-full bg-blue-100 px-3 py-1 text-sm text-blue-700"
-                          >
-                            {skill.trim()}
-                          </span>
-                        ))
-                      : <p className="text-gray-500">No skills added yet</p>}
+                    {skills ? (
+                      skills.split(",").map((skill, idx) => (
+                        <span
+                          key={idx}
+                          className="rounded-full bg-blue-100 px-3 py-1 text-sm text-blue-700"
+                        >
+                          {skill.trim()}
+                        </span>
+                      ))
+                    ) : (
+                      <p className="text-gray-500">No skills added yet</p>
+                    )}
                   </div>
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-gray-600">RESEARCH INTERESTS</p>
+                  <p className="text-sm font-semibold text-gray-600">
+                    RESEARCH INTERESTS
+                  </p>
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {interests
-                      ? interests.split(',').map((interest, idx) => (
-                          <span
-                            key={idx}
-                            className="rounded-full bg-green-100 px-3 py-1 text-sm text-green-700"
-                          >
-                            {interest.trim()}
-                          </span>
-                        ))
-                      : <p className="text-gray-500">No interests added yet</p>}
+                    {interests ? (
+                      interests.split(",").map((interest, idx) => (
+                        <span
+                          key={idx}
+                          className="rounded-full bg-green-100 px-3 py-1 text-sm text-green-700"
+                        >
+                          {interest.trim()}
+                        </span>
+                      ))
+                    ) : (
+                      <p className="text-gray-500">No interests added yet</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -414,11 +414,15 @@ return (
           {/* Edit Form */}
           {editMode && (
             <div className="lg:col-span-2 rounded-lg bg-white p-6 shadow">
-              <h2 className="mb-6 text-2xl font-bold text-gray-900">Edit Profile</h2>
+              <h2 className="mb-6 text-2xl font-bold text-gray-900">
+                Edit Profile
+              </h2>
 
               <div className="space-y-5">
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Full Name</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Full Name
+                  </label>
                   <input
                     type="text"
                     value={name}
@@ -428,7 +432,9 @@ return (
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Email
+                  </label>
                   <input
                     type="email"
                     value={email}
@@ -438,7 +444,9 @@ return (
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Department / Institution</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Department / Institution
+                  </label>
                   <input
                     type="text"
                     value={dept}
@@ -449,7 +457,9 @@ return (
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Professional Bio</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Professional Bio
+                  </label>
                   <textarea
                     value={bio}
                     onChange={(e) => setBio(e.target.value)}
@@ -460,7 +470,9 @@ return (
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Skills & Expertise</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Skills & Expertise
+                  </label>
                   <textarea
                     value={skills}
                     onChange={(e) => setSkills(e.target.value)}
@@ -468,11 +480,15 @@ return (
                     rows={3}
                     className="w-full rounded-lg border border-gray-300 px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
-                  <p className="mt-1 text-xs text-gray-500">Separate with commas</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Separate with commas
+                  </p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Research Interests</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Research Interests
+                  </label>
                   <textarea
                     value={interests}
                     onChange={(e) => setInterests(e.target.value)}
@@ -480,7 +496,9 @@ return (
                     rows={3}
                     className="w-full rounded-lg border border-gray-300 px-4 py-3 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
-                  <p className="mt-1 text-xs text-gray-500">Separate with commas</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Separate with commas
+                  </p>
                 </div>
               </div>
             </div>
@@ -489,7 +507,9 @@ return (
           {/* Right Sidebar - Stats */}
           {!editMode && (
             <div className="rounded-lg bg-white p-6 shadow">
-              <h2 className="mb-4 text-xl font-bold text-gray-900">Research Metrics</h2>
+              <h2 className="mb-4 text-xl font-bold text-gray-900">
+                Research Metrics
+              </h2>
               <div className="space-y-3">
                 <div className="rounded-lg bg-blue-50 p-4 text-center">
                   <p className="text-3xl font-bold text-blue-600">—</p>
@@ -501,14 +521,18 @@ return (
                 </div>
                 <div className="rounded-lg bg-purple-50 p-4 text-center">
                   <p className="text-3xl font-bold text-purple-600">—</p>
-                  <p className="text-sm font-semibold text-gray-700">Publications</p>
+                  <p className="text-sm font-semibold text-gray-700">
+                    Publications
+                  </p>
                 </div>
               </div>
-              <p className="mt-4 text-xs text-gray-500 text-center">Metrics coming soon</p>
+              <p className="mt-4 text-xs text-gray-500 text-center">
+                Metrics coming soon
+              </p>
             </div>
           )}
         </div>
       </div>
     </main>
-  )
+  );
 }

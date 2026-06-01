@@ -1,0 +1,109 @@
+'use client'
+
+import { useState } from 'react'
+import Link from 'next/link'
+import { supabase } from '@/lib/supabase'
+
+export default function ForgotPasswordPage() {
+  const [email, setEmail] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
+
+  const handlePasswordResetRequest = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+
+    setMessage('')
+    setErrorMessage('')
+
+    if (!email.trim()) {
+      setErrorMessage('Please enter your email address.')
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      const redirectTo = `${window.location.origin}/auth/reset-password`
+
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo,
+      })
+
+      if (error) {
+        console.log('PASSWORD RESET REQUEST ERROR:', error)
+
+        /*
+          Enterprise-safe message:
+          Do not reveal whether an email exists in the system.
+        */
+        setMessage(
+          'If an account exists for this email, a password reset link has been sent.'
+        )
+        return
+      }
+
+      setMessage(
+        'If an account exists for this email, a password reset link has been sent.'
+      )
+      setEmail('')
+    } catch (err) {
+      console.error('Unexpected password reset error:', err)
+      setErrorMessage('Something went wrong. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <main className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      <form
+        onSubmit={handlePasswordResetRequest}
+        className="w-full max-w-md rounded-2xl bg-white p-8 shadow-lg"
+      >
+        <h1 className="text-3xl font-bold text-gray-900">Reset password</h1>
+
+        <p className="mt-2 text-sm text-gray-600">
+          Enter your ResearchGram account email. We will send a secure password reset link.
+        </p>
+
+        <div className="mt-6 space-y-4">
+          <input
+            type="email"
+            placeholder="Email address"
+            className="w-full rounded-xl border border-gray-200 p-3 text-gray-900 placeholder:text-gray-400 outline-none focus:border-black"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+
+          {message && (
+            <p className="rounded-xl bg-green-50 px-4 py-3 text-sm text-green-700">
+              {message}
+            </p>
+          )}
+
+          {errorMessage && (
+            <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+              {errorMessage}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-xl bg-black py-3 font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loading ? 'Sending reset link...' : 'Send reset link'}
+          </button>
+        </div>
+
+        <p className="mt-6 text-sm text-gray-600">
+          Remember your password?{' '}
+          <Link href="/auth/login" className="font-medium text-blue-600 hover:underline">
+            Back to login
+          </Link>
+        </p>
+      </form>
+    </main>
+  )
+}

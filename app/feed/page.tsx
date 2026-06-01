@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import AppNav from "@/components/AppNav";
 
 type Profile = {
   full_name: string | null;
@@ -24,14 +25,29 @@ type Attachment = {
   created_at: string;
 };
 
+type Comment = {
+  id: string;
+  content_id: string;
+  user_id: string;
+  comment_text: string;
+  created_at: string | null;
+  profiles?: Profile | null;
+};
+
 type Post = {
   id: string;
+  user_id: string | null;
   title: string | null;
   content: string | null;
   post_type: string | null;
   created_at: string | null;
   profiles?: Profile | null;
   attachments: Attachment[];
+  comments: Comment[];
+  save_count: number;
+  is_saved: boolean;
+  request_count: number;
+  has_requested: boolean;
 };
 
 const BUCKET_NAME = "content-files";
@@ -48,33 +64,33 @@ const POST_TYPE_OPTIONS = [
 ];
 
 function formatPostTime(dateString: string | null) {
-  if (!dateString) return 'Unknown time'
+  if (!dateString) return "Unknown time";
 
   try {
-    const date = new Date(dateString)
-    const now = new Date()
+    const date = new Date(dateString);
+    const now = new Date();
 
-    const diffMs = now.getTime() - date.getTime()
-    const diffMinutes = Math.floor(diffMs / 60000)
-    const diffHours = Math.floor(diffMinutes / 60)
-    const diffDays = Math.floor(diffHours / 24)
+    const diffMs = now.getTime() - date.getTime();
+    const diffMinutes = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMinutes / 60);
+    const diffDays = Math.floor(diffHours / 24);
 
-    if (diffMinutes < 1) return 'Just now'
-    if (diffMinutes < 60) return `${diffMinutes} min ago`
-    if (diffHours < 24) return `${diffHours} hr ago`
-    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`
+    if (diffMinutes < 1) return "Just now";
+    if (diffMinutes < 60) return `${diffMinutes} min ago`;
+    if (diffHours < 24) return `${diffHours} hr ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 
     return new Intl.DateTimeFormat(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
       hour12: true,
-    }).format(date)
+    }).format(date);
   } catch (error) {
-    console.error('Time format error:', error)
-    return 'Unknown time'
+    console.error("Time format error:", error);
+    return "Unknown time";
   }
 }
 function formatFileSize(bytes: number | null) {
@@ -242,13 +258,27 @@ export default function FeedPage() {
   const [files, setFiles] = useState<File[]>([]);
 
   const [posts, setPosts] = useState<Post[]>([]);
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>(
+    {},
+  );
+  const [commentingPostId, setCommentingPostId] = useState<string | null>(null);
+  const [savingPostId, setSavingPostId] = useState<string | null>(null);
+  const [openRequestPostId, setOpenRequestPostId] = useState<string | null>(
+    null,
+  );
+  const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>(
+    {},
+  );
+  const [requestingPostId, setRequestingPostId] = useState<string | null>(null);
 
   const selectedFileNames = useMemo(() => files.map((f) => f.name), [files]);
 
-  const fetchPosts = async () => {
+  const fetchPosts = async (activeUserId?: string) => {
     const { data: contents, error: contentError } = await supabase
       .from("contents")
-      .select('id, title, content, post_type, created_at, user_id, profiles:profiles(full_name, email, department, profile_pic_url)')
+      .select(
+        "id, title, content, post_type, created_at, user_id, profiles:profiles(full_name, email, department, profile_pic_url)",
+      )
       .order("created_at", { ascending: false });
 
     if (contentError) {
@@ -273,6 +303,34 @@ export default function FeedPage() {
       console.log("FETCH ATTACHMENTS ERROR:", attachmentError);
       return;
     }
+    const { data: comments, error: commentError } = await supabase
+      .from("comments")
+      .select(
+        "id, content_id, user_id, comment_text, created_at, profiles:profiles(full_name, email, department, profile_pic_url)",
+      )
+      .in("content_id", contentIds)
+      .order("created_at", { ascending: true });
+
+    if (commentError) {
+      console.log("FETCH COMMENTS ERROR:", commentError);
+    }
+    const { data: savedRows, error: savedError } = await supabase
+      .from("saved_posts")
+      .select("content_id, user_id")
+      .in("content_id", contentIds);
+
+    if (savedError) {
+      console.log("FETCH SAVED POSTS ERROR:", savedError);
+    }
+    const { data: requestRows, error: requestError } = await supabase
+      .from("research_requests")
+      .select("content_id, requester_id, request_type")
+      .in("content_id", contentIds)
+      .eq("request_type", "collaboration");
+
+    if (requestError) {
+      console.log("FETCH REQUESTS ERROR:", requestError);
+    }
 
     const attachmentMap: Record<string, Attachment[]> = {};
 
@@ -282,9 +340,49 @@ export default function FeedPage() {
       }
       attachmentMap[attachment.content_id].push(attachment as Attachment);
     });
+    const commentMap: Record<string, Comment[]> = {};
+
+    (comments || []).forEach((comment: any) => {
+      if (!commentMap[comment.content_id]) {
+        commentMap[comment.content_id] = [];
+      }
+
+      commentMap[comment.content_id].push({
+        id: comment.id,
+        content_id: comment.content_id,
+        user_id: comment.user_id,
+        comment_text: comment.comment_text,
+        created_at: comment.created_at,
+        profiles: Array.isArray(comment.profiles)
+          ? (comment.profiles[0] ?? null)
+          : (comment.profiles ?? null),
+      });
+    });
+    const saveCountMap: Record<string, number> = {};
+    const userSavedSet = new Set<string>();
+
+    (savedRows || []).forEach((save: any) => {
+      saveCountMap[save.content_id] = (saveCountMap[save.content_id] || 0) + 1;
+
+      if (activeUserId && save.user_id === activeUserId) {
+        userSavedSet.add(save.content_id);
+      }
+    });
+    const requestCountMap: Record<string, number> = {};
+    const userRequestedSet = new Set<string>();
+
+    (requestRows || []).forEach((request: any) => {
+      requestCountMap[request.content_id] =
+        (requestCountMap[request.content_id] || 0) + 1;
+
+      if (activeUserId && request.requester_id === activeUserId) {
+        userRequestedSet.add(request.content_id);
+      }
+    });
 
     const normalized = (contents as any[]).map((d) => ({
       id: d.id,
+      user_id: d.user_id,
       title: d.title,
       content: d.content,
       post_type: d.post_type,
@@ -293,6 +391,11 @@ export default function FeedPage() {
         ? (d.profiles[0] ?? null)
         : (d.profiles ?? null),
       attachments: attachmentMap[d.id] || [],
+      comments: commentMap[d.id] || [],
+      save_count: saveCountMap[d.id] || 0,
+      is_saved: userSavedSet.has(d.id),
+      request_count: requestCountMap[d.id] || 0,
+      has_requested: userRequestedSet.has(d.id),
     })) as Post[];
 
     setPosts(normalized);
@@ -319,7 +422,7 @@ export default function FeedPage() {
         setFullName(profileData.full_name || "");
       }
 
-      await fetchPosts();
+      await fetchPosts(authData.user.id);
       setLoading(false);
     };
 
@@ -410,8 +513,130 @@ export default function FeedPage() {
     setContent("");
     setPostType("research_note");
     setFiles([]);
-    await fetchPosts();
+    await fetchPosts(userId);
     setUploading(false);
+  };
+  const handleCreateComment = async (contentId: string) => {
+    const commentText = commentDrafts[contentId]?.trim();
+
+    if (!commentText) {
+      alert("Write a comment first.");
+      return;
+    }
+
+    if (!userId) {
+      alert("You must be logged in to comment.");
+      return;
+    }
+
+    setCommentingPostId(contentId);
+
+    const { error } = await supabase.from("comments").insert({
+      content_id: contentId,
+      user_id: userId,
+      comment_text: commentText,
+    });
+
+    if (error) {
+      console.log("COMMENT INSERT ERROR:", error);
+      alert(error.message);
+      setCommentingPostId(null);
+      return;
+    }
+
+    setCommentDrafts((prev) => ({
+      ...prev,
+      [contentId]: "",
+    }));
+
+    await fetchPosts(userId);
+    setCommentingPostId(null);
+  };
+  const handleToggleSave = async (post: Post) => {
+    if (!userId) {
+      alert("You must be logged in to save posts.");
+      return;
+    }
+
+    setSavingPostId(post.id);
+
+    if (post.is_saved) {
+      const { error } = await supabase
+        .from("saved_posts")
+        .delete()
+        .eq("user_id", userId)
+        .eq("content_id", post.id);
+
+      if (error) {
+        console.log("UNSAVE POST ERROR:", error);
+        alert(error.message);
+        setSavingPostId(null);
+        return;
+      }
+    } else {
+      const { error } = await supabase.from("saved_posts").insert({
+        user_id: userId,
+        content_id: post.id,
+      });
+
+      if (error) {
+        console.log("SAVE POST ERROR:", error);
+        alert(error.message);
+        setSavingPostId(null);
+        return;
+      }
+    }
+
+    await fetchPosts(userId);
+    setSavingPostId(null);
+  };
+  const handleSendCollaborationRequest = async (post: Post) => {
+    if (!userId) {
+      alert("You must be logged in to request collaboration.");
+      return;
+    }
+
+    if (!post.user_id) {
+      alert("This post does not have a valid author.");
+      return;
+    }
+
+    if (post.user_id === userId) {
+      alert("You cannot request collaboration on your own post.");
+      return;
+    }
+
+    const message =
+      requestDrafts[post.id]?.trim() ||
+      "I am interested in collaborating on this research work.";
+
+    setRequestingPostId(post.id);
+
+    const { error } = await supabase.from("research_requests").insert({
+      content_id: post.id,
+      requester_id: userId,
+      receiver_id: post.user_id,
+      request_type: "collaboration",
+      message,
+      status: "pending",
+    });
+
+    if (error) {
+      console.log("COLLABORATION REQUEST ERROR:", error);
+      alert(error.message);
+      setRequestingPostId(null);
+      return;
+    }
+
+    setRequestDrafts((prev) => ({
+      ...prev,
+      [post.id]: "",
+    }));
+
+    setOpenRequestPostId(null);
+
+    await fetchPosts(userId);
+    setRequestingPostId(null);
   };
 
   if (loading) {
@@ -422,44 +647,9 @@ export default function FeedPage() {
     );
   }
 
-return (
-  <main className="min-h-screen bg-gray-100">
-    <nav className="sticky top-0 z-50 border-b border-gray-200 bg-white/90 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-        <button
-          onClick={() => router.push('/')}
-          className="text-xl font-bold text-gray-950"
-        >
-          ResearchGram
-        </button>
-
-        <div className="flex items-center gap-2 text-sm">
-          <button
-            onClick={() => router.push('/feed')}
-            className="rounded-full bg-blue-50 px-4 py-2 font-semibold text-blue-700"
-          >
-            Feed
-          </button>
-
-          <button
-            onClick={() => router.push('/profile')}
-            className="rounded-full px-4 py-2 font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-950"
-          >
-            Profile
-          </button>
-
-          <button
-            onClick={async () => {
-              await supabase.auth.signOut()
-              router.push('/auth/login')
-            }}
-            className="rounded-full px-4 py-2 font-medium text-red-600 transition hover:bg-red-50"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
-    </nav>
+  return (
+    <main className="min-h-screen bg-gray-100">
+      <AppNav activePage="feed" />
       <div className="mx-auto grid max-w-7xl grid-cols-12 gap-6 px-4 py-6">
         <aside className="col-span-12 hidden rounded-2xl bg-white p-5 shadow-sm lg:col-span-3 lg:block">
           <h2 className="text-xl font-bold text-gray-900">ResearchGram</h2>
@@ -555,19 +745,21 @@ return (
               >
                 <div className="mb-4 flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3">
-                   <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-indigo-100">
-  {post.profiles?.profile_pic_url ? (
-    <img
-      src={post.profiles.profile_pic_url}
-      alt={post.profiles?.full_name || 'Profile photo'}
-      className="h-full w-full object-cover"
-    />
-  ) : (
-    <div className="flex h-full w-full items-center justify-center text-sm font-bold text-blue-700">
-      {(post.profiles?.full_name || 'R').charAt(0).toUpperCase()}
-    </div>
-  )}
-</div>
+                    <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-indigo-100">
+                      {post.profiles?.profile_pic_url ? (
+                        <img
+                          src={post.profiles.profile_pic_url}
+                          alt={post.profiles?.full_name || "Profile photo"}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-sm font-bold text-blue-700">
+                          {(post.profiles?.full_name || "R")
+                            .charAt(0)
+                            .toUpperCase()}
+                        </div>
+                      )}
+                    </div>
 
                     <div>
                       <p className="font-semibold text-gray-900">
@@ -595,58 +787,206 @@ return (
                 </p>
 
                 {post.attachments.length > 0 && (
-                  <div className="mt-4 space-y-3">
-                    <p className="text-sm font-semibold text-gray-700">
-                      Attachments ({post.attachments.length})
-                    </p>
+                  <div className="mt-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-gray-700">
+                        Research files ({post.attachments.length})
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        PDF · images · datasets · code
+                      </p>
+                    </div>
 
                     <div className="grid gap-3">
-                      {post.attachments.length > 0 && (
-                        <div className="mt-5 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-semibold text-gray-700">
-                              Research files ({post.attachments.length})
-                            </p>
-                            <p className="text-xs text-gray-400">
-                              PDF · images · datasets · code
-                            </p>
-                          </div>
+                      {post.attachments.map((att) => {
+                        const publicUrl =
+                          supabase.storage
+                            .from(BUCKET_NAME)
+                            .getPublicUrl(att.storage_path).data?.publicUrl ||
+                          att.file_url;
 
-                          <div className="grid gap-3">
-                            {post.attachments.map((att) => {
-                              const publicUrl =
-                                supabase.storage
-                                  .from(BUCKET_NAME)
-                                  .getPublicUrl(att.storage_path).data
-                                  ?.publicUrl || att.file_url;
-
-                              return (
-                                <AttachmentPreview
-                                  key={att.id}
-                                  att={att}
-                                  publicUrl={publicUrl}
-                                />
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                      <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-gray-100 pt-4 text-sm">
-  <button className="rounded-full bg-gray-50 px-4 py-2 font-medium text-gray-700 transition hover:bg-gray-100">
-    Save
-  </button>
-
-  <button className="rounded-full bg-gray-50 px-4 py-2 font-medium text-gray-700 transition hover:bg-gray-100">
-    Discuss
-  </button>
-
-  <button className="rounded-full bg-gray-50 px-4 py-2 font-medium text-gray-700 transition hover:bg-gray-100">
-    Request Collaboration
-  </button>
-</div>
+                        return (
+                          <AttachmentPreview
+                            key={att.id}
+                            att={att}
+                            publicUrl={publicUrl}
+                          />
+                        );
+                      })}
                     </div>
                   </div>
                 )}
+
+                <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-gray-100 pt-4 text-sm">
+                  <button
+                    onClick={() => handleToggleSave(post)}
+                    disabled={savingPostId === post.id}
+                    className={`rounded-full px-4 py-2 font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                      post.is_saved
+                        ? "bg-blue-600 text-white hover:bg-blue-700"
+                        : "bg-gray-50 text-gray-700 hover:bg-gray-100"
+                    }`}
+                  >
+                    {savingPostId === post.id
+                      ? "Saving..."
+                      : post.is_saved
+                        ? `Saved${post.save_count > 0 ? ` (${post.save_count})` : ""}`
+                        : `Save${post.save_count > 0 ? ` (${post.save_count})` : ""}`}
+                  </button>
+
+                  <button className="rounded-full bg-blue-50 px-4 py-2 font-medium text-blue-700 transition hover:bg-blue-100">
+                    Discuss
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (post.user_id === userId) {
+                        alert("This is your own post.");
+                        return;
+                      }
+
+                      if (post.has_requested) {
+                        return;
+                      }
+
+                      setOpenRequestPostId((current) =>
+                        current === post.id ? null : post.id,
+                      );
+                    }}
+                    disabled={post.user_id === userId || post.has_requested}
+                    className={`rounded-full px-4 py-2 font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                      post.has_requested
+                        ? "bg-green-50 text-green-700"
+                        : "bg-gray-50 text-gray-700 hover:bg-gray-100"
+                    }`}
+                  >
+                    {post.user_id === userId
+                      ? "Your Post"
+                      : post.has_requested
+                        ? `Requested${post.request_count > 0 ? ` (${post.request_count})` : ""}`
+                        : `Request Collaboration${post.request_count > 0 ? ` (${post.request_count})` : ""}`}
+                  </button>
+                </div>
+                {openRequestPostId === post.id &&
+                  !post.has_requested &&
+                  post.user_id !== userId && (
+                    <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                      <p className="text-sm font-semibold text-blue-900">
+                        Send a collaboration request
+                      </p>
+
+                      <p className="mt-1 text-xs text-blue-700">
+                        Introduce your interest, skills, or how you want to
+                        contribute.
+                      </p>
+
+                      <textarea
+                        value={requestDrafts[post.id] || ""}
+                        onChange={(e) =>
+                          setRequestDrafts((prev) => ({
+                            ...prev,
+                            [post.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="Example: I am interested in your dataset and would like to collaborate on model evaluation..."
+                        className="mt-3 min-h-[90px] w-full rounded-2xl border border-blue-100 bg-white p-3 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-blue-500"
+                      />
+
+                      <div className="mt-3 flex justify-end gap-2">
+                        <button
+                          onClick={() => setOpenRequestPostId(null)}
+                          className="rounded-full px-4 py-2 text-sm font-medium text-gray-600 transition hover:bg-white"
+                        >
+                          Cancel
+                        </button>
+
+                        <button
+                          onClick={() => handleSendCollaborationRequest(post)}
+                          disabled={requestingPostId === post.id}
+                          className="rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {requestingPostId === post.id
+                            ? "Sending..."
+                            : "Send Request"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                <div className="mt-5 border-t border-gray-100 pt-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-gray-900">
+                      Discussion ({post.comments.length})
+                    </h4>
+                    <span className="text-xs text-gray-400">
+                      Ask questions, share feedback, or suggest collaboration
+                    </span>
+                  </div>
+
+                  {post.comments.length > 0 && (
+                    <div className="mb-4 space-y-3">
+                      {post.comments.map((comment) => (
+                        <div key={comment.id} className="flex gap-3">
+                          <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-indigo-100">
+                            {comment.profiles?.profile_pic_url ? (
+                              <img
+                                src={comment.profiles.profile_pic_url}
+                                alt={
+                                  comment.profiles?.full_name ||
+                                  "Comment author"
+                                }
+                                className="h-full w-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-xs font-bold text-blue-700">
+                                {(comment.profiles?.full_name || "R")
+                                  .charAt(0)
+                                  .toUpperCase()}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="min-w-0 flex-1 rounded-2xl bg-gray-50 px-4 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold text-gray-900">
+                                {comment.profiles?.full_name ||
+                                  "ResearchGram User"}
+                              </p>
+                              <span className="text-xs text-gray-400">
+                                {formatPostTime(comment.created_at)}
+                              </span>
+                            </div>
+
+                            <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-gray-700">
+                              {comment.comment_text}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex gap-3">
+                    <input
+                      value={commentDrafts[post.id] || ""}
+                      onChange={(e) =>
+                        setCommentDrafts((prev) => ({
+                          ...prev,
+                          [post.id]: e.target.value,
+                        }))
+                      }
+                      placeholder="Write a research discussion comment..."
+                      className="flex-1 rounded-full border border-gray-200 px-4 py-3 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-blue-500"
+                    />
+
+                    <button
+                      onClick={() => handleCreateComment(post.id)}
+                      disabled={commentingPostId === post.id}
+                      className="rounded-full bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {commentingPostId === post.id ? "Posting..." : "Comment"}
+                    </button>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
