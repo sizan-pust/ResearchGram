@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AppNav from "@/components/AppNav";
 
@@ -97,6 +97,8 @@ function dedupeMessages(messageList: Message[]) {
 
 export default function MessagesPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedConversationId = searchParams.get("conversation");
 
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -113,10 +115,16 @@ export default function MessagesPage() {
     string | null
   >(null);
   const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({});
+  const [typingChannelReady, setTypingChannelReady] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const typingChannelRef = useRef<any>(null);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingSendThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const typingHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const selectedConversation = useMemo(
     () =>
@@ -285,6 +293,16 @@ export default function MessagesPage() {
 
     setConversations(normalized);
 
+    if (
+      requestedConversationId &&
+      normalized.some(
+        (conversation) => conversation.id === requestedConversationId,
+      )
+    ) {
+      setSelectedConversationId(requestedConversationId);
+      return;
+    }
+
     if (!selectedConversationId && normalized.length > 0) {
       setSelectedConversationId(normalized[0].id);
     }
@@ -439,25 +457,95 @@ export default function MessagesPage() {
       supabase.removeChannel(channel);
     };
   }, [userId, selectedConversationId]);
+  useEffect(() => {
+  if (!selectedConversationId || !userId) return;
 
-  const sendTypingSignal = async () => {
-    if (!typingChannelRef.current || !userId || !selectedConversationId) return;
+  setTypingUsers({});
+  setTypingChannelReady(false);
 
-    if (typingTimeoutRef.current) return;
-
-    await typingChannelRef.current.send({
-      type: "broadcast",
-      event: "typing",
-      payload: {
-        user_id: userId,
-        conversation_id: selectedConversationId,
+  const channel = supabase
+    .channel(`typing-${selectedConversationId}`, {
+      config: {
+        broadcast: {
+          self: false,
+        },
       },
+    })
+    .on("broadcast", { event: "typing" }, ({ payload }) => {
+      console.log("TYPING EVENT RECEIVED:", payload);
+
+      if (!payload?.user_id || payload.user_id === userId) return;
+
+      setTypingUsers((prev) => ({
+        ...prev,
+        [payload.user_id]: true,
+      }));
+
+      if (typingHideTimeoutRef.current) {
+        clearTimeout(typingHideTimeoutRef.current);
+      }
+
+      typingHideTimeoutRef.current = setTimeout(() => {
+        setTypingUsers((prev) => ({
+          ...prev,
+          [payload.user_id]: false,
+        }));
+      }, 1800);
+    })
+    .subscribe((status) => {
+      console.log("TYPING CHANNEL STATUS:", status);
+
+      if (status === "SUBSCRIBED") {
+        setTypingChannelReady(true);
+      }
     });
 
-    typingTimeoutRef.current = setTimeout(() => {
-      typingTimeoutRef.current = null;
-    }, 1200);
+  typingChannelRef.current = channel;
+
+  return () => {
+    if (typingSendThrottleRef.current) {
+      clearTimeout(typingSendThrottleRef.current);
+      typingSendThrottleRef.current = null;
+    }
+
+    if (typingHideTimeoutRef.current) {
+      clearTimeout(typingHideTimeoutRef.current);
+      typingHideTimeoutRef.current = null;
+    }
+
+    setTypingUsers({});
+    setTypingChannelReady(false);
+    typingChannelRef.current = null;
+
+    supabase.removeChannel(channel);
   };
+}, [selectedConversationId, userId]);
+
+ const sendTypingSignal = async () => {
+  if (!typingChannelRef.current) return;
+  if (!typingChannelReady) return;
+  if (!userId || !selectedConversationId) return;
+
+  if (typingSendThrottleRef.current) return;
+
+  console.log("SENDING TYPING SIGNAL");
+
+  const response = await typingChannelRef.current.send({
+    type: "broadcast",
+    event: "typing",
+    payload: {
+      user_id: userId,
+      conversation_id: selectedConversationId,
+      at: new Date().toISOString(),
+    },
+  });
+
+  console.log("TYPING SEND RESPONSE:", response);
+
+  typingSendThrottleRef.current = setTimeout(() => {
+    typingSendThrottleRef.current = null;
+  }, 1000);
+};
 
   const handleSendMessage = async () => {
     const cleanMessage = messageText.trim();
@@ -659,8 +747,8 @@ export default function MessagesPage() {
                   No conversations yet
                 </h2>
                 <p className="mt-2 text-sm text-gray-500">
-                  Accept a collaboration request to start a research
-                  conversation.
+                  Accept collaboration requests or message your network
+                  connections to start a research conversation.
                 </p>
               </div>
             ) : (
@@ -721,7 +809,7 @@ export default function MessagesPage() {
                             ? "This message was deleted"
                             : conversation.lastMessage?.message_text ||
                               conversation.contentPost?.title ||
-                              "New collaboration conversation"}
+                              "Direct academic conversation"}
                         </p>
 
                         {conversation.unread_count > 0 && (

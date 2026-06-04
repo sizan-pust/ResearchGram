@@ -4,7 +4,13 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
-type ActivePage = "feed" | "researchers" | "requests" | "messages" | "profile";
+type ActivePage =
+  | "feed"
+  | "researchers"
+  | "network"
+  | "requests"
+  | "messages"
+  | "profile";
 
 type AppNavProps = {
   activePage: ActivePage;
@@ -20,17 +26,42 @@ export default function AppNav({ activePage }: AppNavProps) {
   const loadCounts = async (currentUserId: string) => {
     if (!currentUserId) return;
 
-    const { count: requestCount, error: requestError } = await supabase
-      .from("research_requests")
-      .select("id", { count: "exact", head: true })
-      .eq("receiver_id", currentUserId)
-      .eq("status", "pending");
+    // const { count: requestCount, error: requestError } = await supabase
+    //   .from("research_requests")
+    //   .select("id", { count: "exact", head: true })
+    //   .eq("receiver_id", currentUserId)
+    //   .eq("status", "pending");
 
-    if (requestError) {
-      console.log("NAV REQUEST COUNT ERROR:", requestError);
-    } else {
-      setPendingRequestCount(requestCount || 0);
+    // if (requestError) {
+    //   console.log("NAV REQUEST COUNT ERROR:", requestError);
+    // } else {
+    //   setPendingRequestCount(requestCount || 0);
+    // }
+    const { count: researchRequestCount, error: researchRequestError } =
+      await supabase
+        .from("research_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("receiver_id", currentUserId)
+        .eq("status", "pending");
+
+    if (researchRequestError) {
+      console.log("NAV RESEARCH REQUEST COUNT ERROR:", researchRequestError);
     }
+
+    const { count: profileRequestCount, error: profileRequestError } =
+      await supabase
+        .from("profile_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("receiver_id", currentUserId)
+        .eq("status", "pending");
+
+    if (profileRequestError) {
+      console.log("NAV PROFILE REQUEST COUNT ERROR:", profileRequestError);
+    }
+
+    setPendingRequestCount(
+      (researchRequestCount || 0) + (profileRequestCount || 0),
+    );
 
     const { data: conversations, error: conversationError } = await supabase
       .from("conversations")
@@ -117,6 +148,17 @@ export default function AppNav({ activePage }: AppNavProps) {
         {
           event: "*",
           schema: "public",
+          table: "profile_requests",
+        },
+        async () => {
+          await loadCounts(userId);
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
           table: "conversations",
         },
         async () => {
@@ -176,6 +218,12 @@ export default function AppNav({ activePage }: AppNavProps) {
             Researchers
           </button>
 
+          <button
+            onClick={() => router.push("/network")}
+            className={navButtonClass("network")}
+          >
+            Network
+          </button>
           <button
             onClick={() => router.push("/requests")}
             className={navButtonClass("requests")}
