@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AppNav from "@/components/AppNav";
@@ -95,7 +95,7 @@ function dedupeMessages(messageList: Message[]) {
   );
 }
 
-export default function MessagesPage() {
+function MessagesPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedConversationId = searchParams.get("conversation");
@@ -458,94 +458,94 @@ export default function MessagesPage() {
     };
   }, [userId, selectedConversationId]);
   useEffect(() => {
-  if (!selectedConversationId || !userId) return;
-
-  setTypingUsers({});
-  setTypingChannelReady(false);
-
-  const channel = supabase
-    .channel(`typing-${selectedConversationId}`, {
-      config: {
-        broadcast: {
-          self: false,
-        },
-      },
-    })
-    .on("broadcast", { event: "typing" }, ({ payload }) => {
-      console.log("TYPING EVENT RECEIVED:", payload);
-
-      if (!payload?.user_id || payload.user_id === userId) return;
-
-      setTypingUsers((prev) => ({
-        ...prev,
-        [payload.user_id]: true,
-      }));
-
-      if (typingHideTimeoutRef.current) {
-        clearTimeout(typingHideTimeoutRef.current);
-      }
-
-      typingHideTimeoutRef.current = setTimeout(() => {
-        setTypingUsers((prev) => ({
-          ...prev,
-          [payload.user_id]: false,
-        }));
-      }, 1800);
-    })
-    .subscribe((status) => {
-      console.log("TYPING CHANNEL STATUS:", status);
-
-      if (status === "SUBSCRIBED") {
-        setTypingChannelReady(true);
-      }
-    });
-
-  typingChannelRef.current = channel;
-
-  return () => {
-    if (typingSendThrottleRef.current) {
-      clearTimeout(typingSendThrottleRef.current);
-      typingSendThrottleRef.current = null;
-    }
-
-    if (typingHideTimeoutRef.current) {
-      clearTimeout(typingHideTimeoutRef.current);
-      typingHideTimeoutRef.current = null;
-    }
+    if (!selectedConversationId || !userId) return;
 
     setTypingUsers({});
     setTypingChannelReady(false);
-    typingChannelRef.current = null;
 
-    supabase.removeChannel(channel);
+    const channel = supabase
+      .channel(`typing-${selectedConversationId}`, {
+        config: {
+          broadcast: {
+            self: false,
+          },
+        },
+      })
+      .on("broadcast", { event: "typing" }, ({ payload }) => {
+        console.log("TYPING EVENT RECEIVED:", payload);
+
+        if (!payload?.user_id || payload.user_id === userId) return;
+
+        setTypingUsers((prev) => ({
+          ...prev,
+          [payload.user_id]: true,
+        }));
+
+        if (typingHideTimeoutRef.current) {
+          clearTimeout(typingHideTimeoutRef.current);
+        }
+
+        typingHideTimeoutRef.current = setTimeout(() => {
+          setTypingUsers((prev) => ({
+            ...prev,
+            [payload.user_id]: false,
+          }));
+        }, 1800);
+      })
+      .subscribe((status) => {
+        console.log("TYPING CHANNEL STATUS:", status);
+
+        if (status === "SUBSCRIBED") {
+          setTypingChannelReady(true);
+        }
+      });
+
+    typingChannelRef.current = channel;
+
+    return () => {
+      if (typingSendThrottleRef.current) {
+        clearTimeout(typingSendThrottleRef.current);
+        typingSendThrottleRef.current = null;
+      }
+
+      if (typingHideTimeoutRef.current) {
+        clearTimeout(typingHideTimeoutRef.current);
+        typingHideTimeoutRef.current = null;
+      }
+
+      setTypingUsers({});
+      setTypingChannelReady(false);
+      typingChannelRef.current = null;
+
+      supabase.removeChannel(channel);
+    };
+  }, [selectedConversationId, userId]);
+
+  const sendTypingSignal = async () => {
+    if (!typingChannelRef.current) return;
+    if (!typingChannelReady) return;
+    if (!userId || !selectedConversationId) return;
+
+    if (typingSendThrottleRef.current) return;
+
+    console.log("SENDING TYPING SIGNAL");
+
+    const response = await typingChannelRef.current.send({
+      type: "broadcast",
+      event: "typing",
+      payload: {
+        user_id: userId,
+        conversation_id: selectedConversationId,
+        at: new Date().toISOString(),
+      },
+    });
+
+    console.log("TYPING SEND RESPONSE:", response);
+
+    typingSendThrottleRef.current = setTimeout(() => {
+      typingSendThrottleRef.current = null;
+    }, 1000);
   };
-}, [selectedConversationId, userId]);
-
- const sendTypingSignal = async () => {
-  if (!typingChannelRef.current) return;
-  if (!typingChannelReady) return;
-  if (!userId || !selectedConversationId) return;
-
-  if (typingSendThrottleRef.current) return;
-
-  console.log("SENDING TYPING SIGNAL");
-
-  const response = await typingChannelRef.current.send({
-    type: "broadcast",
-    event: "typing",
-    payload: {
-      user_id: userId,
-      conversation_id: selectedConversationId,
-      at: new Date().toISOString(),
-    },
-  });
-
-  console.log("TYPING SEND RESPONSE:", response);
-
-  typingSendThrottleRef.current = setTimeout(() => {
-    typingSendThrottleRef.current = null;
-  }, 1000);
-};
 
   const handleSendMessage = async () => {
     const cleanMessage = messageText.trim();
@@ -1119,5 +1119,18 @@ export default function MessagesPage() {
         </section>
       </section>
     </main>
+  );
+}
+export default function MessagesPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-gray-50 p-6 text-gray-700">
+          Loading messages...
+        </main>
+      }
+    >
+      <MessagesPageContent />
+    </Suspense>
   );
 }
