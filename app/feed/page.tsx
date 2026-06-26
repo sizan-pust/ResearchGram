@@ -663,7 +663,18 @@ export default function FeedPage() {
             </p>
             <p className="text-xs text-gray-500 break-all">{userId}</p>
           </div>
-
+          <button
+            onClick={() => router.push("/workspace")}
+            className="mt-4 w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            Open Project Workspace
+          </button>
+          <button
+            onClick={() => router.push("/mentorship")}
+            className="mt-3 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700"
+          >
+            Find Mentors
+          </button>
           <div className="mt-4 space-y-2 text-sm text-gray-600">
             <p>• Research paper posts</p>
             <p>• Dataset uploads</p>
@@ -866,6 +877,16 @@ export default function FeedPage() {
                         ? `Requested${post.request_count > 0 ? ` (${post.request_count})` : ""}`
                         : `Request Collaboration${post.request_count > 0 ? ` (${post.request_count})` : ""}`}
                   </button>
+                  {post.user_id === userId && (
+                    <button
+                      onClick={() =>
+                        router.push(`/recommendations?postId=${post.id}`)
+                      }
+                      className="rounded-full bg-purple-50 px-4 py-2 font-medium text-purple-700 transition hover:bg-purple-100"
+                    >
+                      Find Collaborators
+                    </button>
+                  )}
                 </div>
                 {openRequestPostId === post.id &&
                   !post.has_requested &&
