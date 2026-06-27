@@ -59,8 +59,24 @@ export default function AppNav({ activePage }: AppNavProps) {
       console.log("NAV PROFILE REQUEST COUNT ERROR:", profileRequestError);
     }
 
+    const { count: paperAccessRequestCount, error: paperAccessRequestError } =
+      await supabase
+        .from("paper_access_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("owner_id", currentUserId)
+        .eq("status", "pending");
+
+    if (paperAccessRequestError) {
+      console.log(
+        "NAV PAPER ACCESS REQUEST COUNT ERROR:",
+        paperAccessRequestError,
+      );
+    }
+
     setPendingRequestCount(
-      (researchRequestCount || 0) + (profileRequestCount || 0),
+      (researchRequestCount || 0) +
+        (profileRequestCount || 0) +
+        (paperAccessRequestCount || 0),
     );
 
     const { data: conversations, error: conversationError } = await supabase
@@ -149,6 +165,17 @@ export default function AppNav({ activePage }: AppNavProps) {
           event: "*",
           schema: "public",
           table: "profile_requests",
+        },
+        async () => {
+          await loadCounts(userId);
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "paper_access_requests",
         },
         async () => {
           await loadCounts(userId);

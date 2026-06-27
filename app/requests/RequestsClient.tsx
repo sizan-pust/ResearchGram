@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import RequestsUI, {
   type ContentPost,
   type Profile,
+  type RequestStatus,
   type UnifiedRequestView,
 } from "./UI";
 
@@ -13,8 +14,17 @@ function sortByNewest(requests: UnifiedRequestView[]) {
   return [...requests].sort((a, b) => {
     const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
     const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+
     return bTime - aTime;
   });
+}
+
+function getProfileName(profile: Profile | null | undefined) {
+  return (
+    profile?.full_name ||
+    profile?.email?.split("@")[0] ||
+    "ResearchGram User"
+  );
 }
 
 export default function RequestsClient() {
@@ -47,184 +57,272 @@ export default function RequestsClient() {
     const currentUserId = authData.user.id;
     setUserId(currentUserId);
 
-    const { data: researchReceivedData, error: researchReceivedError } =
-      await supabase
+    const [
+      researchReceivedResult,
+      researchSentResult,
+      profileReceivedResult,
+      profileSentResult,
+      paperReceivedResult,
+      paperSentResult,
+    ] = await Promise.all([
+      supabase
         .from("research_requests")
         .select(
-          "id, content_id, requester_id, receiver_id, request_type, message, status, created_at",
+          "id, content_id, requester_id, receiver_id, request_type, message, status, created_at, updated_at",
         )
-        .eq("receiver_id", currentUserId)
-        .order("created_at", { ascending: false });
+        .eq("receiver_id", currentUserId),
 
-    if (researchReceivedError) {
-      console.log(
-        "FETCH RECEIVED RESEARCH REQUESTS ERROR:",
-        researchReceivedError,
-      );
-    }
+      supabase
+        .from("research_requests")
+        .select(
+          "id, content_id, requester_id, receiver_id, request_type, message, status, created_at, updated_at",
+        )
+        .eq("requester_id", currentUserId),
 
-    const { data: researchSentData, error: researchSentError } = await supabase
-      .from("research_requests")
-      .select(
-        "id, content_id, requester_id, receiver_id, request_type, message, status, created_at",
-      )
-      .eq("requester_id", currentUserId)
-      .order("created_at", { ascending: false });
-
-    if (researchSentError) {
-      console.log("FETCH SENT RESEARCH REQUESTS ERROR:", researchSentError);
-    }
-
-    const { data: profileReceivedData, error: profileReceivedError } =
-      await supabase
+      supabase
         .from("profile_requests")
         .select(
-          "id, requester_id, receiver_id, request_type, message, status, created_at",
+          "id, requester_id, receiver_id, request_type, message, status, created_at, updated_at",
         )
-        .eq("receiver_id", currentUserId)
-        .order("created_at", { ascending: false });
+        .eq("receiver_id", currentUserId),
 
-    if (profileReceivedError) {
+      supabase
+        .from("profile_requests")
+        .select(
+          "id, requester_id, receiver_id, request_type, message, status, created_at, updated_at",
+        )
+        .eq("requester_id", currentUserId),
+
+      supabase
+        .from("paper_access_requests")
+        .select(
+          "id, content_id, requester_id, owner_id, reason, status, created_at, updated_at, approved_at, rejected_at",
+        )
+        .eq("owner_id", currentUserId),
+
+      supabase
+        .from("paper_access_requests")
+        .select(
+          "id, content_id, requester_id, owner_id, reason, status, created_at, updated_at, approved_at, rejected_at",
+        )
+        .eq("requester_id", currentUserId),
+    ]);
+
+    if (researchReceivedResult.error) {
+      console.log(
+        "FETCH RECEIVED RESEARCH REQUESTS ERROR:",
+        researchReceivedResult.error,
+      );
+    }
+
+    if (researchSentResult.error) {
+      console.log("FETCH SENT RESEARCH REQUESTS ERROR:", researchSentResult.error);
+    }
+
+    if (profileReceivedResult.error) {
       console.log(
         "FETCH RECEIVED PROFILE REQUESTS ERROR:",
-        profileReceivedError,
+        profileReceivedResult.error,
       );
     }
 
-    const { data: profileSentData, error: profileSentError } = await supabase
-      .from("profile_requests")
-      .select(
-        "id, requester_id, receiver_id, request_type, message, status, created_at",
-      )
-      .eq("requester_id", currentUserId)
-      .order("created_at", { ascending: false });
-
-    if (profileSentError) {
-      console.log("FETCH SENT PROFILE REQUESTS ERROR:", profileSentError);
+    if (profileSentResult.error) {
+      console.log("FETCH SENT PROFILE REQUESTS ERROR:", profileSentResult.error);
     }
 
-    const researchReceived = (researchReceivedData || []) as any[];
-    const researchSent = (researchSentData || []) as any[];
-    const profileReceived = (profileReceivedData || []) as any[];
-    const profileSent = (profileSentData || []) as any[];
+    if (paperReceivedResult.error) {
+      console.log(
+        "FETCH RECEIVED PAPER ACCESS REQUESTS ERROR:",
+        paperReceivedResult.error,
+      );
+    }
 
-    const profileIds = Array.from(
-      new Set([
-        ...researchReceived.map((item) => item.requester_id),
-        ...researchSent.map((item) => item.receiver_id),
-        ...profileReceived.map((item) => item.requester_id),
-        ...profileSent.map((item) => item.receiver_id),
-      ]),
-    ).filter(Boolean);
+    if (paperSentResult.error) {
+      console.log("FETCH SENT PAPER ACCESS REQUESTS ERROR:", paperSentResult.error);
+    }
 
-    const contentIds = Array.from(
-      new Set([
-        ...researchReceived.map((item) => item.content_id),
-        ...researchSent.map((item) => item.content_id),
-      ]),
-    ).filter(Boolean);
+    const researchReceived = researchReceivedResult.data || [];
+    const researchSent = researchSentResult.data || [];
+    const profileReceived = profileReceivedResult.data || [];
+    const profileSent = profileSentResult.data || [];
+    const paperReceived = paperReceivedResult.data || [];
+    const paperSent = paperSentResult.data || [];
 
-    let profileMap: Record<string, Profile> = {};
-    let contentMap: Record<string, ContentPost> = {};
+    const profileIds = new Set<string>();
+    const contentIds = new Set<string>();
 
-    if (profileIds.length > 0) {
-      const { data: profilesData, error: profilesError } = await supabase
+    [...researchReceived, ...researchSent].forEach((request: any) => {
+      if (request.requester_id) profileIds.add(request.requester_id);
+      if (request.receiver_id) profileIds.add(request.receiver_id);
+      if (request.content_id) contentIds.add(request.content_id);
+    });
+
+    [...profileReceived, ...profileSent].forEach((request: any) => {
+      if (request.requester_id) profileIds.add(request.requester_id);
+      if (request.receiver_id) profileIds.add(request.receiver_id);
+    });
+
+    [...paperReceived, ...paperSent].forEach((request: any) => {
+      if (request.requester_id) profileIds.add(request.requester_id);
+      if (request.owner_id) profileIds.add(request.owner_id);
+      if (request.content_id) contentIds.add(request.content_id);
+    });
+
+    const profileMap: Record<string, Profile> = {};
+    const contentMap: Record<string, ContentPost> = {};
+
+    if (profileIds.size > 0) {
+      const { data: profiles, error: profileError } = await supabase
         .from("profiles")
         .select("id, full_name, email, department, profile_pic_url")
-        .in("id", profileIds);
+        .in("id", Array.from(profileIds));
 
-      if (profilesError) {
-        console.log("FETCH REQUEST PROFILES ERROR:", profilesError);
+      if (profileError) {
+        console.log("FETCH REQUEST PROFILES ERROR:", profileError);
       }
 
-      profileMap = (profilesData || []).reduce(
-        (acc, profile) => {
-          acc[profile.id] = profile as Profile;
-          return acc;
-        },
-        {} as Record<string, Profile>,
-      );
+      (profiles || []).forEach((profile: any) => {
+        profileMap[profile.id] = profile as Profile;
+      });
     }
 
-    if (contentIds.length > 0) {
-      const { data: contentsData, error: contentsError } = await supabase
+    if (contentIds.size > 0) {
+      const { data: contents, error: contentError } = await supabase
         .from("contents")
-        .select("id, user_id, title, content, post_type, created_at")
-        .in("id", contentIds);
+        .select(
+          "id, user_id, title, content, abstract, post_type, content_category, visibility_mode, full_paper_access_mode, allow_full_paper_request, created_at",
+        )
+        .in("id", Array.from(contentIds));
 
-      if (contentsError) {
-        console.log("FETCH REQUEST POSTS ERROR:", contentsError);
+      if (contentError) {
+        console.log("FETCH REQUEST CONTENTS ERROR:", contentError);
       }
 
-      contentMap = (contentsData || []).reduce(
-        (acc, post) => {
-          acc[post.id] = post as ContentPost;
-          return acc;
-        },
-        {} as Record<string, ContentPost>,
-      );
+      (contents || []).forEach((content: any) => {
+        contentMap[content.id] = content as ContentPost;
+      });
     }
 
-    const normalizedResearchReceived: UnifiedRequestView[] =
-      researchReceived.map((request) => ({
-        ...request,
-        kind: "research",
-        otherProfile: profileMap[request.requester_id] || null,
-        contentPost: contentMap[request.content_id] || null,
-      }));
-
-    const normalizedResearchSent: UnifiedRequestView[] = researchSent.map(
-      (request) => ({
-        ...request,
-        kind: "research",
-        otherProfile: profileMap[request.receiver_id] || null,
-        contentPost: contentMap[request.content_id] || null,
-      }),
-    );
-
-    const normalizedProfileReceived: UnifiedRequestView[] = profileReceived.map(
-      (request) => ({
+    const normalizedReceived: UnifiedRequestView[] = [
+      ...researchReceived.map((request: any) => ({
         id: request.id,
-        kind: "profile",
-        content_id: null,
+        kind: "research" as const,
+        direction: "received" as const,
+        request_type: request.request_type || "collaboration",
+        status: request.status as RequestStatus,
+        message: request.message,
+        created_at: request.created_at,
+        updated_at: request.updated_at,
         requester_id: request.requester_id,
         receiver_id: request.receiver_id,
-        request_type: request.request_type || "connection",
-        message: request.message,
-        status: request.status,
-        created_at: request.created_at,
+        owner_id: request.receiver_id,
+        content_id: request.content_id,
         otherProfile: profileMap[request.requester_id] || null,
-        contentPost: null,
-      }),
-    );
+        requesterProfile: profileMap[request.requester_id] || null,
+        receiverProfile: profileMap[request.receiver_id] || null,
+        contentPost: contentMap[request.content_id] || null,
+      })),
 
-    const normalizedProfileSent: UnifiedRequestView[] = profileSent.map(
-      (request) => ({
+      ...profileReceived.map((request: any) => ({
         id: request.id,
-        kind: "profile",
-        content_id: null,
+        kind: "profile" as const,
+        direction: "received" as const,
+        request_type: request.request_type || "connection",
+        status: request.status as RequestStatus,
+        message: request.message,
+        created_at: request.created_at,
+        updated_at: request.updated_at,
         requester_id: request.requester_id,
         receiver_id: request.receiver_id,
-        request_type: request.request_type || "connection",
-        message: request.message,
-        status: request.status,
-        created_at: request.created_at,
-        otherProfile: profileMap[request.receiver_id] || null,
+        owner_id: request.receiver_id,
+        content_id: null,
+        otherProfile: profileMap[request.requester_id] || null,
+        requesterProfile: profileMap[request.requester_id] || null,
+        receiverProfile: profileMap[request.receiver_id] || null,
         contentPost: null,
-      }),
-    );
+      })),
 
-    setReceivedRequests(
-      sortByNewest([
-        ...normalizedResearchReceived,
-        ...normalizedProfileReceived,
-      ]),
-    );
+      ...paperReceived.map((request: any) => ({
+        id: request.id,
+        kind: "paper_access" as const,
+        direction: "received" as const,
+        request_type: "paper_access",
+        status: request.status as RequestStatus,
+        message: request.reason,
+        created_at: request.created_at,
+        updated_at: request.updated_at,
+        requester_id: request.requester_id,
+        receiver_id: request.owner_id,
+        owner_id: request.owner_id,
+        content_id: request.content_id,
+        otherProfile: profileMap[request.requester_id] || null,
+        requesterProfile: profileMap[request.requester_id] || null,
+        receiverProfile: profileMap[request.owner_id] || null,
+        contentPost: contentMap[request.content_id] || null,
+      })),
+    ];
 
-    setSentRequests(
-      sortByNewest([...normalizedResearchSent, ...normalizedProfileSent]),
-    );
+    const normalizedSent: UnifiedRequestView[] = [
+      ...researchSent.map((request: any) => ({
+        id: request.id,
+        kind: "research" as const,
+        direction: "sent" as const,
+        request_type: request.request_type || "collaboration",
+        status: request.status as RequestStatus,
+        message: request.message,
+        created_at: request.created_at,
+        updated_at: request.updated_at,
+        requester_id: request.requester_id,
+        receiver_id: request.receiver_id,
+        owner_id: request.receiver_id,
+        content_id: request.content_id,
+        otherProfile: profileMap[request.receiver_id] || null,
+        requesterProfile: profileMap[request.requester_id] || null,
+        receiverProfile: profileMap[request.receiver_id] || null,
+        contentPost: contentMap[request.content_id] || null,
+      })),
 
+      ...profileSent.map((request: any) => ({
+        id: request.id,
+        kind: "profile" as const,
+        direction: "sent" as const,
+        request_type: request.request_type || "connection",
+        status: request.status as RequestStatus,
+        message: request.message,
+        created_at: request.created_at,
+        updated_at: request.updated_at,
+        requester_id: request.requester_id,
+        receiver_id: request.receiver_id,
+        owner_id: request.receiver_id,
+        content_id: null,
+        otherProfile: profileMap[request.receiver_id] || null,
+        requesterProfile: profileMap[request.requester_id] || null,
+        receiverProfile: profileMap[request.receiver_id] || null,
+        contentPost: null,
+      })),
+
+      ...paperSent.map((request: any) => ({
+        id: request.id,
+        kind: "paper_access" as const,
+        direction: "sent" as const,
+        request_type: "paper_access",
+        status: request.status as RequestStatus,
+        message: request.reason,
+        created_at: request.created_at,
+        updated_at: request.updated_at,
+        requester_id: request.requester_id,
+        receiver_id: request.owner_id,
+        owner_id: request.owner_id,
+        content_id: request.content_id,
+        otherProfile: profileMap[request.owner_id] || null,
+        requesterProfile: profileMap[request.requester_id] || null,
+        receiverProfile: profileMap[request.owner_id] || null,
+        contentPost: contentMap[request.content_id] || null,
+      })),
+    ];
+
+    setReceivedRequests(sortByNewest(normalizedReceived));
+    setSentRequests(sortByNewest(normalizedSent));
     setLoading(false);
   };
 
@@ -233,14 +331,13 @@ export default function RequestsClient() {
   }, []);
 
   const ensureResearchConversation = async (request: UnifiedRequestView) => {
-    if (request.kind !== "research") {
-      throw new Error(
-        "Only research collaboration requests can open messages.",
-      );
-    }
-
-    if (!request.content_id) {
-      throw new Error("This research request has no related content.");
+    if (
+      request.kind !== "research" ||
+      !request.content_id ||
+      !request.requester_id ||
+      !request.receiver_id
+    ) {
+      return null;
     }
 
     const { data: existingConversation, error: existingError } = await supabase
@@ -250,14 +347,14 @@ export default function RequestsClient() {
       .maybeSingle();
 
     if (existingError) {
-      console.log("CHECK EXISTING CONVERSATION ERROR:", existingError);
+      console.log("CHECK CONVERSATION ERROR:", existingError);
     }
 
     if (existingConversation?.id) {
       return existingConversation.id as string;
     }
 
-    const { data: newConversation, error: conversationError } = await supabase
+    const { data: insertedConversation, error: insertError } = await supabase
       .from("conversations")
       .insert({
         request_id: request.id,
@@ -269,89 +366,71 @@ export default function RequestsClient() {
       .select("id")
       .single();
 
-    if (conversationError || !newConversation) {
-      throw new Error(
-        conversationError?.message || "Could not create conversation.",
-      );
+    if (insertError) {
+      console.log("CREATE CONVERSATION ERROR:", insertError);
+      alert(insertError.message);
+      return null;
     }
 
-    return newConversation.id as string;
+    return insertedConversation?.id as string;
   };
 
   const handleUpdateStatus = async (
     request: UnifiedRequestView,
-    status: "accepted" | "declined",
+    nextStatus: RequestStatus,
   ) => {
     setUpdatingId(request.id);
 
     if (request.kind === "research") {
       const { error } = await supabase
         .from("research_requests")
-        .update({ status })
-        .eq("id", request.id)
-        .eq("receiver_id", userId);
+        .update({
+          status: nextStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", request.id);
 
       if (error) {
-        console.log("UPDATE RESEARCH REQUEST STATUS ERROR:", error);
+        console.log("UPDATE RESEARCH REQUEST ERROR:", error);
         alert(error.message);
         setUpdatingId(null);
         return;
       }
 
-      if (status === "accepted") {
-        const { error: conversationError } = await supabase
-          .from("conversations")
-          .upsert(
-            {
-              request_id: request.id,
-              content_id: request.content_id,
-              participant_one_id: request.requester_id,
-              participant_two_id: request.receiver_id,
-              updated_at: new Date().toISOString(),
-            },
-            {
-              onConflict: "request_id",
-            },
-          );
-
-        if (conversationError) {
-          console.log("CREATE CONVERSATION ERROR:", conversationError);
-          alert(
-            `Request accepted, but conversation was not created: ${conversationError.message}`,
-          );
-          setUpdatingId(null);
-          await loadRequests();
-          return;
-        }
+      if (nextStatus === "accepted") {
+        await ensureResearchConversation(request);
       }
     }
 
     if (request.kind === "profile") {
       const { error } = await supabase
         .from("profile_requests")
-        .update({ status, updated_at: new Date().toISOString() })
-        .eq("id", request.id)
-        .eq("receiver_id", userId);
+        .update({
+          status: nextStatus,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", request.id);
 
       if (error) {
-        console.log("UPDATE PROFILE REQUEST STATUS ERROR:", error);
+        console.log("UPDATE PROFILE REQUEST ERROR:", error);
         alert(error.message);
         setUpdatingId(null);
         return;
       }
 
-      if (status === "accepted") {
-        const [userOneId, userTwoId] =
-          request.requester_id < request.receiver_id
-            ? [request.requester_id, request.receiver_id]
-            : [request.receiver_id, request.requester_id];
+      if (
+        nextStatus === "accepted" &&
+        request.requester_id &&
+        request.receiver_id
+      ) {
+        const sortedIds = [request.requester_id, request.receiver_id].sort();
 
         const { error: connectionError } = await supabase
           .from("user_connections")
           .upsert(
             {
-              user_one_id: userOneId,
-              user_two_id: userTwoId,
+              user_one_id: sortedIds[0],
+              user_two_id: sortedIds[1],
             },
             {
               onConflict: "user_one_id,user_two_id",
@@ -359,14 +438,42 @@ export default function RequestsClient() {
           );
 
         if (connectionError) {
-          console.log("CREATE USER CONNECTION ERROR:", connectionError);
-          alert(
-            `Request accepted, but connection was not created: ${connectionError.message}`,
-          );
+          console.log("CREATE CONNECTION ERROR:", connectionError);
+          alert(connectionError.message);
           setUpdatingId(null);
-          await loadRequests();
           return;
         }
+      }
+    }
+
+    if (request.kind === "paper_access") {
+      const now = new Date().toISOString();
+
+      const updatePayload =
+        nextStatus === "approved"
+          ? {
+              status: "approved",
+              approved_at: now,
+              rejected_at: null,
+              updated_at: now,
+            }
+          : {
+              status: "rejected",
+              approved_at: null,
+              rejected_at: now,
+              updated_at: now,
+            };
+
+      const { error } = await supabase
+        .from("paper_access_requests")
+        .update(updatePayload)
+        .eq("id", request.id);
+
+      if (error) {
+        console.log("UPDATE PAPER ACCESS REQUEST ERROR:", error);
+        alert(error.message);
+        setUpdatingId(null);
+        return;
       }
     }
 
@@ -375,34 +482,23 @@ export default function RequestsClient() {
   };
 
   const handleOpenMessages = async (request: UnifiedRequestView) => {
-    if (request.kind !== "research") {
-      alert(
-        "Messages are available for accepted research collaboration requests.",
-      );
-      return;
-    }
-
-    if (request.status !== "accepted") {
-      alert("Accept the request first to start messaging.");
-      return;
-    }
+    if (request.kind !== "research") return;
 
     setOpeningConversationId(request.id);
 
-    try {
-      const conversationId = await ensureResearchConversation(request);
-      router.push(`/messages?conversation=${conversationId}`);
-    } catch (error: any) {
-      console.log("OPEN CONVERSATION ERROR:", error);
-      alert(error?.message || "Could not open messages.");
-    }
+    const conversationId = await ensureResearchConversation(request);
 
     setOpeningConversationId(null);
+
+    if (conversationId) {
+      router.push(`/messages?conversation=${conversationId}`);
+    }
   };
 
   return (
     <RequestsUI
       loading={loading}
+      userId={userId}
       activeTab={activeTab}
       receivedRequests={receivedRequests}
       sentRequests={sentRequests}
@@ -412,14 +508,8 @@ export default function RequestsClient() {
       handleUpdateStatus={handleUpdateStatus}
       handleOpenMessages={handleOpenMessages}
       handleGoToFeed={() => router.push("/feed")}
-      handleGoToProfile={(profileId) => {
-        if (!profileId) {
-          alert("Profile not found.");
-          return;
-        }
-
-        router.push(`/researchers/${profileId}`);
-      }}
+      handleGoToProfile={(profileId) => router.push(`/researchers/${profileId}`)}
+      getProfileName={getProfileName}
     />
   );
 }

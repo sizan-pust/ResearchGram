@@ -6,20 +6,32 @@ import { supabase } from "@/lib/supabase";
 import FeedUI, {
   type Attachment,
   type Comment,
+  type ContentAuthor,
+  type PaperAccessRequestStatus,
+  type PlatformAuthor,
   type Post,
 } from "./UI";
 
-const BUCKET_NAME = "content-files";
+const PUBLIC_BUCKET_NAME = "content-files";
+const RESTRICTED_BUCKET_NAME = "restricted-papers";
 
 function detectAttachmentType(file: File) {
   const name = file.name.toLowerCase();
   const mime = file.type.toLowerCase();
 
   if (mime.includes("pdf") || name.endsWith(".pdf")) return "pdf";
-  if (name.endsWith(".doc") || name.endsWith(".docx") || mime.includes("word")) {
+  if (
+    name.endsWith(".doc") ||
+    name.endsWith(".docx") ||
+    mime.includes("word")
+  ) {
     return "document";
   }
-  if (name.endsWith(".txt") || name.endsWith(".md") || mime.startsWith("text/")) {
+  if (
+    name.endsWith(".txt") ||
+    name.endsWith(".md") ||
+    mime.startsWith("text/")
+  ) {
     return "text";
   }
   if (
@@ -60,6 +72,10 @@ function detectAttachmentType(file: File) {
   return "other";
 }
 
+function getFileExt(file: File) {
+  return file.name.split(".").pop()?.toLowerCase() || "bin";
+}
+
 export default function FeedClient() {
   const router = useRouter();
 
@@ -71,29 +87,96 @@ export default function FeedClient() {
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [abstract, setAbstract] = useState("");
   const [postType, setPostType] = useState("research_note");
+  const [contentCategory, setContentCategory] = useState("general_post");
+  const [visibilityMode, setVisibilityMode] = useState("public");
+  const [fullPaperAccessMode, setFullPaperAccessMode] = useState("public");
+  const [doi, setDoi] = useState("");
+  const [keywords, setKeywords] = useState("");
+
   const [files, setFiles] = useState<File[]>([]);
+  const [fullPaperFile, setFullPaperFile] = useState<File | null>(null);
+
+  const [coAuthorSearch, setCoAuthorSearch] = useState("");
+  const [authorSuggestions, setAuthorSuggestions] = useState<PlatformAuthor[]>(
+    [],
+  );
+  const [selectedPlatformAuthors, setSelectedPlatformAuthors] = useState<
+    PlatformAuthor[]
+  >([]);
+  const [manualAuthorName, setManualAuthorName] = useState("");
+  const [manualAuthors, setManualAuthors] = useState<string[]>([]);
 
   const [posts, setPosts] = useState<Post[]>([]);
-  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>(
+    {},
+  );
   const [commentingPostId, setCommentingPostId] = useState<string | null>(null);
 
   const [savingPostId, setSavingPostId] = useState<string | null>(null);
   const [openRequestPostId, setOpenRequestPostId] = useState<string | null>(
     null,
   );
-  const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>({});
+  const [requestDrafts, setRequestDrafts] = useState<Record<string, string>>(
+    {},
+  );
   const [requestingPostId, setRequestingPostId] = useState<string | null>(null);
 
-  const selectedFileNames = useMemo(() => files.map((file) => file.name), [
-    files,
-  ]);
+  const [paperAccessRequestDrafts, setPaperAccessRequestDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [openPaperAccessPostId, setOpenPaperAccessPostId] = useState<
+    string | null
+  >(null);
+  const [paperAccessRequestingPostId, setPaperAccessRequestingPostId] =
+    useState<string | null>(null);
+
+  const selectedFileNames = useMemo(
+    () => files.map((file) => file.name),
+    [files],
+  );
+
+  useEffect(() => {
+    const searchAuthors = async () => {
+      const query = coAuthorSearch.trim();
+
+      if (query.length < 2) {
+        setAuthorSuggestions([]);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, department, profile_pic_url")
+        .or(
+          `full_name.ilike.%${query}%,email.ilike.%${query}%,department.ilike.%${query}%`,
+        )
+        .limit(8);
+
+      if (error) {
+        console.log("AUTHOR SEARCH ERROR:", error);
+        setAuthorSuggestions([]);
+        return;
+      }
+
+      const safeData = ((data || []) as PlatformAuthor[]).filter(
+        (profile) =>
+          profile.id !== userId &&
+          !selectedPlatformAuthors.some((author) => author.id === profile.id),
+      );
+
+      setAuthorSuggestions(safeData);
+    };
+
+    searchAuthors();
+  }, [coAuthorSearch, selectedPlatformAuthors, userId]);
 
   const fetchPosts = async (activeUserId?: string) => {
     const { data: contents, error: contentError } = await supabase
       .from("contents")
       .select(
-        "id, title, content, post_type, created_at, user_id, profiles:profiles(full_name, email, department, profile_pic_url)",
+        "id, title, content, abstract, content_category, visibility_mode, full_paper_access_mode, allow_full_paper_request, doi, keywords, publication_status, publisher_name, publication_date, post_type, created_at, user_id, profiles:profiles(full_name, email, department, profile_pic_url)",
       )
       .order("created_at", { ascending: false });
 
@@ -107,7 +190,40 @@ export default function FeedClient() {
       return;
     }
 
-    const contentIds = contents.map((item) => item.id);
+    const rawContents = (contents || []) as any[];
+    let visibleContents = rawContents;
+
+    if (activeUserId && rawContents.length > 0) {
+      const rawContentIds = rawContents.map((item) => item.id);
+
+      const { data: hiddenRows, error: hiddenError } = await supabase
+        .from("hidden_posts")
+        .select("content_id")
+        .eq("user_id", activeUserId)
+        .in("content_id", rawContentIds);
+
+      if (hiddenError) {
+        console.log("FETCH HIDDEN POSTS ERROR:", hiddenError);
+      }
+
+      const hiddenSet = new Set(
+        (hiddenRows || []).map((row: any) => row.content_id),
+      );
+
+      visibleContents = rawContents.filter((item) => !hiddenSet.has(item.id));
+    }
+
+    if (visibleContents.length === 0) {
+      setPosts([]);
+      return;
+    }
+
+    const contentIds = visibleContents.map((item) => item.id);
+
+    const contentOwnerMap: Record<string, string | null> = {};
+    visibleContents.forEach((item) => {
+      contentOwnerMap[item.id] = item.user_id;
+    });
 
     const { data: attachments, error: attachmentError } = await supabase
       .from("content_attachments")
@@ -151,16 +267,80 @@ export default function FeedClient() {
       console.log("FETCH REQUESTS ERROR:", requestError);
     }
 
+    const { data: paperAccessRows, error: paperAccessError } = await supabase
+      .from("paper_access_requests")
+      .select("id, content_id, requester_id, owner_id, status")
+      .in("content_id", contentIds);
+
+    if (paperAccessError) {
+      console.log("FETCH PAPER ACCESS REQUESTS ERROR:", paperAccessError);
+    }
+
+    const { data: authorRows, error: authorError } = await supabase
+      .from("content_authors")
+      .select(
+        "id, content_id, profile_id, manual_name, author_order, author_role, profiles:profiles(id, full_name, email, department, profile_pic_url)",
+      )
+      .in("content_id", contentIds)
+      .order("author_order", { ascending: true });
+
+    if (authorError) {
+      console.log("FETCH CONTENT AUTHORS ERROR:", authorError);
+    }
+
+    const paperAccessStatusMap: Record<string, PaperAccessRequestStatus> = {};
+    const approvedAccessSet = new Set<string>();
+
+    (paperAccessRows || []).forEach((request: any) => {
+      if (activeUserId && request.requester_id === activeUserId) {
+        paperAccessStatusMap[request.content_id] = request.status;
+      }
+
+      if (
+        activeUserId &&
+        request.requester_id === activeUserId &&
+        request.status === "approved"
+      ) {
+        approvedAccessSet.add(request.content_id);
+      }
+    });
+
     const attachmentMap: Record<string, Attachment[]> = {};
 
-    (attachments || []).forEach((attachmentItem: any) => {
+    for (const attachmentItem of attachments || []) {
       const attachment = attachmentItem as Attachment;
+      const bucketName = attachment.bucket_name || PUBLIC_BUCKET_NAME;
+      const accessLevel = attachment.access_level || "public";
+      const ownerId = contentOwnerMap[attachment.content_id];
+      const isOwner = activeUserId && ownerId === activeUserId;
+      const hasApprovedAccess = approvedAccessSet.has(attachment.content_id);
 
-      const publicUrl =
-        supabase.storage
-          .from(BUCKET_NAME)
-          .getPublicUrl(attachment.storage_path).data?.publicUrl ||
-        attachment.file_url;
+      let fileUrl = attachment.file_url || "";
+
+      if (accessLevel === "public") {
+        fileUrl =
+          supabase.storage
+            .from(bucketName)
+            .getPublicUrl(attachment.storage_path).data?.publicUrl ||
+          attachment.file_url;
+      }
+
+      if (accessLevel === "restricted") {
+        if (isOwner || hasApprovedAccess) {
+          const { data: signedData, error: signedError } =
+            await supabase.storage
+              .from(bucketName)
+              .createSignedUrl(attachment.storage_path, 60 * 60);
+
+          if (signedError) {
+            console.log("SIGNED URL ERROR:", signedError);
+          }
+
+          fileUrl = signedData?.signedUrl || "";
+        } else {
+          fileUrl = "";
+        }
+      }
 
       if (!attachmentMap[attachment.content_id]) {
         attachmentMap[attachment.content_id] = [];
@@ -168,9 +348,11 @@ export default function FeedClient() {
 
       attachmentMap[attachment.content_id].push({
         ...attachment,
-        file_url: publicUrl,
+        bucket_name: bucketName,
+        access_level: accessLevel,
+        file_url: fileUrl,
       });
-    });
+    }
 
     const commentMap: Record<string, Comment[]> = {};
 
@@ -188,6 +370,26 @@ export default function FeedClient() {
         profiles: Array.isArray(comment.profiles)
           ? (comment.profiles[0] ?? null)
           : (comment.profiles ?? null),
+      });
+    });
+
+    const authorMap: Record<string, ContentAuthor[]> = {};
+
+    (authorRows || []).forEach((author: any) => {
+      if (!authorMap[author.content_id]) {
+        authorMap[author.content_id] = [];
+      }
+
+      authorMap[author.content_id].push({
+        id: author.id,
+        content_id: author.content_id,
+        profile_id: author.profile_id,
+        manual_name: author.manual_name,
+        author_order: author.author_order,
+        author_role: author.author_role,
+        profile: Array.isArray(author.profiles)
+          ? (author.profiles[0] ?? null)
+          : (author.profiles ?? null),
       });
     });
 
@@ -214,22 +416,36 @@ export default function FeedClient() {
       }
     });
 
-    const normalized = (contents as any[]).map((item) => ({
+    const normalized = visibleContents.map((item) => ({
       id: item.id,
       user_id: item.user_id,
       title: item.title,
       content: item.content,
+      abstract: item.abstract,
+      content_category: item.content_category || "general_post",
+      visibility_mode: item.visibility_mode || "public",
+      full_paper_access_mode: item.full_paper_access_mode || "public",
+      allow_full_paper_request: Boolean(item.allow_full_paper_request),
+      doi: item.doi,
+      keywords: item.keywords,
+      publication_status: item.publication_status,
+      publisher_name: item.publisher_name,
+      publication_date: item.publication_date,
       post_type: item.post_type,
       created_at: item.created_at,
       profiles: Array.isArray(item.profiles)
         ? (item.profiles[0] ?? null)
         : (item.profiles ?? null),
       attachments: attachmentMap[item.id] || [],
+      authors: authorMap[item.id] || [],
       comments: commentMap[item.id] || [],
       save_count: saveCountMap[item.id] || 0,
       is_saved: userSavedSet.has(item.id),
       request_count: requestCountMap[item.id] || 0,
       has_requested: userRequestedSet.has(item.id),
+      paper_access_request_status: paperAccessStatusMap[item.id] || null,
+      has_full_paper_access:
+        item.user_id === activeUserId || approvedAccessSet.has(item.id),
     })) as Post[];
 
     setPosts(normalized);
@@ -263,26 +479,175 @@ export default function FeedClient() {
     load();
   }, [router]);
 
+  const resetPostForm = () => {
+    setTitle("");
+    setContent("");
+    setAbstract("");
+    setPostType("research_note");
+    setContentCategory("general_post");
+    setVisibilityMode("public");
+    setFullPaperAccessMode("public");
+    setDoi("");
+    setKeywords("");
+    setFiles([]);
+    setFullPaperFile(null);
+    setCoAuthorSearch("");
+    setAuthorSuggestions([]);
+    setSelectedPlatformAuthors([]);
+    setManualAuthorName("");
+    setManualAuthors([]);
+  };
+
+  const handleAddPlatformAuthor = (profile: PlatformAuthor) => {
+    if (selectedPlatformAuthors.some((author) => author.id === profile.id)) {
+      return;
+    }
+
+    setSelectedPlatformAuthors((prev) => [...prev, profile]);
+    setCoAuthorSearch("");
+    setAuthorSuggestions([]);
+  };
+
+  const handleRemovePlatformAuthor = (profileId: string) => {
+    setSelectedPlatformAuthors((prev) =>
+      prev.filter((author) => author.id !== profileId),
+    );
+  };
+
+  const handleAddManualAuthor = () => {
+    const cleanName = manualAuthorName.trim();
+
+    if (!cleanName) return;
+
+    if (manualAuthors.includes(cleanName)) {
+      setManualAuthorName("");
+      return;
+    }
+
+    setManualAuthors((prev) => [...prev, cleanName]);
+    setManualAuthorName("");
+  };
+
+  const handleRemoveManualAuthor = (name: string) => {
+    setManualAuthors((prev) =>
+      prev.filter((authorName) => authorName !== name),
+    );
+  };
+
+  const uploadAttachment = async ({
+    file,
+    contentId,
+    index,
+    bucketName,
+    accessLevel,
+    fileRole,
+    isFullPaper,
+    isPreviewFile,
+  }: {
+    file: File;
+    contentId: string;
+    index: number;
+    bucketName: string;
+    accessLevel: "public" | "restricted";
+    fileRole: string;
+    isFullPaper: boolean;
+    isPreviewFile: boolean;
+  }) => {
+    const ext = getFileExt(file);
+    const attachmentType = detectAttachmentType(file);
+    const storagePath = `uploads/${userId}/${contentId}/${Date.now()}-${index}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(bucketName)
+      .upload(storagePath, file, {
+        cacheControl: "3600",
+        upsert: false,
+      });
+
+    if (uploadError) {
+      throw new Error(uploadError.message);
+    }
+
+    let fileUrl = "";
+
+    if (accessLevel === "public") {
+      const { data: publicData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(storagePath);
+
+      fileUrl = publicData.publicUrl;
+    }
+
+    const { error: attachmentInsertError } = await supabase
+      .from("content_attachments")
+      .insert({
+        content_id: contentId,
+        file_url: fileUrl,
+        storage_path: storagePath,
+        original_name: file.name,
+        mime_type: file.type || null,
+        file_ext: ext,
+        file_size: file.size,
+        attachment_type: attachmentType,
+        bucket_name: bucketName,
+        access_level: accessLevel,
+        file_role: fileRole,
+        is_full_paper: isFullPaper,
+        is_preview_file: isPreviewFile,
+      });
+
+    if (attachmentInsertError) {
+      throw new Error(attachmentInsertError.message);
+    }
+  };
+
   const handleCreatePost = async () => {
     if (!title.trim()) {
       alert("Add a title first");
       return;
     }
 
-    if (!content.trim()) {
-      alert("Write something first");
+    if (!content.trim() && !abstract.trim()) {
+      alert("Write content or abstract first");
+      return;
+    }
+
+    const isPaper = contentCategory === "research_paper";
+
+    if (isPaper && !abstract.trim()) {
+      alert("For research paper posts, abstract is required.");
+      return;
+    }
+
+    if (
+      isPaper &&
+      fullPaperAccessMode === "request_required" &&
+      !fullPaperFile
+    ) {
+      alert("Upload the full paper file for request-based access.");
       return;
     }
 
     setUploading(true);
 
+    const shouldAllowFullPaperRequest =
+      isPaper && fullPaperAccessMode === "request_required";
+
     const { data: insertedContent, error: insertError } = await supabase
       .from("contents")
       .insert({
         user_id: userId,
-        title,
-        content,
+        title: title.trim(),
+        content: content.trim(),
+        abstract: abstract.trim() || null,
         post_type: postType,
+        content_category: contentCategory,
+        visibility_mode: visibilityMode,
+        full_paper_access_mode: fullPaperAccessMode,
+        allow_full_paper_request: shouldAllowFullPaperRequest,
+        doi: doi.trim() || null,
+        keywords: keywords.trim() || null,
+        publication_status: "published",
       })
       .select("id")
       .single();
@@ -296,58 +661,74 @@ export default function FeedClient() {
 
     const contentId = insertedContent.id;
 
-    if (files.length > 0) {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const ext = file.name.split(".").pop()?.toLowerCase() || "bin";
-        const attachmentType = detectAttachmentType(file);
-        const storagePath = `uploads/${userId}/${contentId}/${Date.now()}-${i}.${ext}`;
+    try {
+      if (fullPaperFile) {
+        const restricted =
+          isPaper &&
+          (fullPaperAccessMode === "request_required" ||
+            fullPaperAccessMode === "private");
 
-        const { error: uploadError } = await supabase.storage
-          .from(BUCKET_NAME)
-          .upload(storagePath, file, {
-            cacheControl: "3600",
-            upsert: false,
+        await uploadAttachment({
+          file: fullPaperFile,
+          contentId,
+          index: 0,
+          bucketName: restricted ? RESTRICTED_BUCKET_NAME : PUBLIC_BUCKET_NAME,
+          accessLevel: restricted ? "restricted" : "public",
+          fileRole: "full_paper",
+          isFullPaper: true,
+          isPreviewFile: false,
+        });
+      }
+
+      if (files.length > 0) {
+        for (let i = 0; i < files.length; i++) {
+          await uploadAttachment({
+            file: files[i],
+            contentId,
+            index: i + 1,
+            bucketName: PUBLIC_BUCKET_NAME,
+            accessLevel: "public",
+            fileRole: "attachment",
+            isFullPaper: false,
+            isPreviewFile: true,
           });
-
-        if (uploadError) {
-          console.log("UPLOAD ERROR:", uploadError);
-          alert(uploadError.message);
-          setUploading(false);
-          return;
-        }
-
-        const { data: publicData } = supabase.storage
-          .from(BUCKET_NAME)
-          .getPublicUrl(storagePath);
-
-        const { error: attachmentInsertError } = await supabase
-          .from("content_attachments")
-          .insert({
-            content_id: contentId,
-            file_url: publicData.publicUrl,
-            storage_path: storagePath,
-            original_name: file.name,
-            mime_type: file.type || null,
-            file_ext: ext,
-            file_size: file.size,
-            attachment_type: attachmentType,
-          });
-
-        if (attachmentInsertError) {
-          console.log("ATTACHMENT INSERT ERROR:", attachmentInsertError);
-          alert(attachmentInsertError.message);
-          setUploading(false);
-          return;
         }
       }
+
+      const authorRows = [
+        ...selectedPlatformAuthors.map((author, index) => ({
+          content_id: contentId,
+          profile_id: author.id,
+          manual_name: null,
+          author_order: index + 1,
+          author_role: "co_author",
+        })),
+        ...manualAuthors.map((authorName, index) => ({
+          content_id: contentId,
+          profile_id: null,
+          manual_name: authorName,
+          author_order: selectedPlatformAuthors.length + index + 1,
+          author_role: "co_author",
+        })),
+      ];
+
+      if (authorRows.length > 0) {
+        const { error: authorError } = await supabase
+          .from("content_authors")
+          .insert(authorRows);
+
+        if (authorError) {
+          throw new Error(authorError.message);
+        }
+      }
+    } catch (error) {
+      console.log("POST UPLOAD/AUTHOR ERROR:", error);
+      alert(error instanceof Error ? error.message : "Could not finish post.");
+      setUploading(false);
+      return;
     }
 
-    setTitle("");
-    setContent("");
-    setPostType("research_note");
-    setFiles([]);
-
+    resetPostForm();
     await fetchPosts(userId);
     setUploading(false);
   };
@@ -477,6 +858,137 @@ export default function FeedClient() {
     setRequestingPostId(null);
   };
 
+  const handleRequestFullPaperAccess = async (post: Post) => {
+    if (!userId) {
+      alert("You must be logged in to request paper access.");
+      return;
+    }
+
+    if (!post.user_id) {
+      alert("This paper does not have a valid owner.");
+      return;
+    }
+
+    if (post.user_id === userId) {
+      alert("This is your own paper.");
+      return;
+    }
+
+    if (post.paper_access_request_status) {
+      alert(`Access request already ${post.paper_access_request_status}.`);
+      return;
+    }
+
+    const reason =
+      paperAccessRequestDrafts[post.id]?.trim() ||
+      "I would like to read the full paper for academic/research purpose.";
+
+    setPaperAccessRequestingPostId(post.id);
+
+    const { error } = await supabase.from("paper_access_requests").insert({
+      content_id: post.id,
+      requester_id: userId,
+      owner_id: post.user_id,
+      reason,
+      status: "pending",
+    });
+
+    if (error) {
+      console.log("PAPER ACCESS REQUEST ERROR:", error);
+      alert(error.message);
+      setPaperAccessRequestingPostId(null);
+      return;
+    }
+
+    setPaperAccessRequestDrafts((prev) => ({
+      ...prev,
+      [post.id]: "",
+    }));
+
+    setOpenPaperAccessPostId(null);
+    await fetchPosts(userId);
+    setPaperAccessRequestingPostId(null);
+    alert("Full paper access request sent.");
+  };
+  const handleCopyPostLink = async (post: Post) => {
+    const link = `${window.location.origin}/feed?post=${post.id}`;
+
+    try {
+      await navigator.clipboard.writeText(link);
+      alert("Post link copied.");
+    } catch {
+      window.prompt("Copy this post link:", link);
+    }
+  };
+
+  const handleHidePost = async (post: Post) => {
+    if (!userId) {
+      alert("You must be logged in to hide posts.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Hide this post from your feed? You can still find it later through direct links or search if available.",
+    );
+
+    if (!confirmed) return;
+
+    const { error } = await supabase.from("hidden_posts").insert({
+      content_id: post.id,
+      user_id: userId,
+    });
+
+    if (error) {
+      if (error.code === "23505") {
+        await fetchPosts(userId);
+        return;
+      }
+
+      console.log("HIDE POST ERROR:", error);
+      alert(error.message);
+      return;
+    }
+
+    await fetchPosts(userId);
+  };
+
+  const handleReportPost = async (
+    post: Post,
+    reason: string,
+    details: string,
+  ) => {
+    if (!userId) {
+      alert("You must be logged in to report posts.");
+      return;
+    }
+
+    if (post.user_id === userId) {
+      alert("You cannot report your own post.");
+      return;
+    }
+
+    const { error } = await supabase.from("post_reports").insert({
+      content_id: post.id,
+      reporter_id: userId,
+      reason,
+      details: details.trim() || null,
+      status: "pending",
+    });
+
+    if (error) {
+      if (error.code === "23505") {
+        alert("You have already reported this post.");
+        return;
+      }
+
+      console.log("REPORT POST ERROR:", error);
+      alert(error.message);
+      return;
+    }
+
+    alert("Report submitted. Thank you for helping keep ResearchGram safe.");
+  };
+
   return (
     <FeedUI
       loading={loading}
@@ -485,27 +997,60 @@ export default function FeedClient() {
       fullName={fullName}
       title={title}
       content={content}
+      abstract={abstract}
       postType={postType}
-      files={files}
+      contentCategory={contentCategory}
+      visibilityMode={visibilityMode}
+      fullPaperAccessMode={fullPaperAccessMode}
+      doi={doi}
+      keywords={keywords}
+      fullPaperFile={fullPaperFile}
       posts={posts}
       selectedFileNames={selectedFileNames}
+      coAuthorSearch={coAuthorSearch}
+      authorSuggestions={authorSuggestions}
+      selectedPlatformAuthors={selectedPlatformAuthors}
+      manualAuthorName={manualAuthorName}
+      manualAuthors={manualAuthors}
       commentDrafts={commentDrafts}
       commentingPostId={commentingPostId}
       savingPostId={savingPostId}
       openRequestPostId={openRequestPostId}
       requestDrafts={requestDrafts}
       requestingPostId={requestingPostId}
+      openPaperAccessPostId={openPaperAccessPostId}
+      paperAccessRequestDrafts={paperAccessRequestDrafts}
+      paperAccessRequestingPostId={paperAccessRequestingPostId}
       setTitle={setTitle}
       setContent={setContent}
+      setAbstract={setAbstract}
       setPostType={setPostType}
+      setContentCategory={setContentCategory}
+      setVisibilityMode={setVisibilityMode}
+      setFullPaperAccessMode={setFullPaperAccessMode}
+      setDoi={setDoi}
+      setKeywords={setKeywords}
       setFiles={setFiles}
+      setFullPaperFile={setFullPaperFile}
+      setCoAuthorSearch={setCoAuthorSearch}
+      setManualAuthorName={setManualAuthorName}
       setCommentDrafts={setCommentDrafts}
       setOpenRequestPostId={setOpenRequestPostId}
       setRequestDrafts={setRequestDrafts}
+      setOpenPaperAccessPostId={setOpenPaperAccessPostId}
+      setPaperAccessRequestDrafts={setPaperAccessRequestDrafts}
+      handleAddPlatformAuthor={handleAddPlatformAuthor}
+      handleRemovePlatformAuthor={handleRemovePlatformAuthor}
+      handleAddManualAuthor={handleAddManualAuthor}
+      handleRemoveManualAuthor={handleRemoveManualAuthor}
       handleCreatePost={handleCreatePost}
       handleCreateComment={handleCreateComment}
       handleToggleSave={handleToggleSave}
       handleSendCollaborationRequest={handleSendCollaborationRequest}
+      handleRequestFullPaperAccess={handleRequestFullPaperAccess}
+      handleCopyPostLink={handleCopyPostLink}
+      handleHidePost={handleHidePost}
+      handleReportPost={handleReportPost}
       handleGoToWorkspace={() => router.push("/workspace")}
       handleGoToMentorship={() => router.push("/mentorship")}
       handleGoToRecommendations={(postId) =>
