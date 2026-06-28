@@ -7,8 +7,14 @@ import WorkspaceUI, {
   type Profile,
   type Workspace,
   type WorkspaceFile,
+  type WorkspaceMeeting,
   type WorkspaceMember,
+  type WorkspaceMilestone,
+  type WorkspaceRecording,
   type WorkspaceTask,
+  type WorkspaceUpdate,
+  type WorkspaceType,
+  type WorkspaceTab,
 } from "./UI";
 
 const BUCKET_NAME = "content-files";
@@ -47,12 +53,19 @@ export default function WorkspaceClient() {
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState("");
 
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
 
   const [tasks, setTasks] = useState<WorkspaceTask[]>([]);
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [milestones, setMilestones] = useState<WorkspaceMilestone[]>([]);
+  const [meetings, setMeetings] = useState<WorkspaceMeeting[]>([]);
+  const [recordings, setRecordings] = useState<WorkspaceRecording[]>([]);
+  const [updates, setUpdates] = useState<WorkspaceUpdate[]>([]);
+
   const [collaboratorOptions, setCollaboratorOptions] = useState<Profile[]>([]);
   const [selectedCollaboratorId, setSelectedCollaboratorId] = useState("");
 
@@ -60,7 +73,12 @@ export default function WorkspaceClient() {
   const [addingTask, setAddingTask] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [addingMember, setAddingMember] = useState(false);
+  const [savingMilestone, setSavingMilestone] = useState(false);
+  const [savingMeeting, setSavingMeeting] = useState(false);
+  const [savingUpdate, setSavingUpdate] = useState(false);
 
+  const [workspaceType, setWorkspaceType] =
+    useState<WorkspaceType>("personal");
   const [workspaceTitle, setWorkspaceTitle] = useState("");
   const [workspaceDescription, setWorkspaceDescription] = useState("");
   const [workspaceResearchArea, setWorkspaceResearchArea] = useState("");
@@ -71,6 +89,17 @@ export default function WorkspaceClient() {
   const [taskPriority, setTaskPriority] = useState("medium");
   const [taskDueDate, setTaskDueDate] = useState("");
   const [taskAssignedTo, setTaskAssignedTo] = useState("");
+
+  const [milestoneTitle, setMilestoneTitle] = useState("");
+  const [milestoneDescription, setMilestoneDescription] = useState("");
+  const [milestoneDueDate, setMilestoneDueDate] = useState("");
+
+  const [meetingTitle, setMeetingTitle] = useState("");
+  const [meetingStart, setMeetingStart] = useState("");
+  const [activeMeeting, setActiveMeeting] =
+    useState<WorkspaceMeeting | null>(null);
+
+  const [updateText, setUpdateText] = useState("");
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
@@ -118,14 +147,7 @@ export default function WorkspaceClient() {
       return;
     }
 
-    const safeMemberRows = (memberRows || []) as Array<{
-      id: string;
-      workspace_id: string;
-      user_id: string;
-      role: string;
-      created_at: string | null;
-    }>;
-
+    const safeMemberRows = (memberRows || []) as WorkspaceMember[];
     const memberIds = safeMemberRows.map((member) => member.user_id);
     const memberIdSet = new Set(memberIds);
 
@@ -183,50 +205,30 @@ export default function WorkspaceClient() {
       candidateIds.add(otherUserId);
     };
 
-    const { data: connectionRows, error: connectionError } = await supabase
+    const { data: connectionRows } = await supabase
       .from("user_connections")
       .select("user_one_id, user_two_id")
       .or(`user_one_id.eq.${activeUserId},user_two_id.eq.${activeUserId}`);
-
-    if (connectionError) {
-      console.log("LOAD USER CONNECTIONS ERROR:", connectionError);
-    }
 
     (connectionRows || []).forEach((connection: any) => {
       addCandidatePair(connection.user_one_id, connection.user_two_id);
     });
 
-    const { data: acceptedResearchRows, error: acceptedResearchError } =
-      await supabase
-        .from("research_requests")
-        .select("requester_id, receiver_id, status")
-        .eq("status", "accepted")
-        .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
-
-    if (acceptedResearchError) {
-      console.log(
-        "LOAD ACCEPTED RESEARCH REQUESTS ERROR:",
-        acceptedResearchError,
-      );
-    }
+    const { data: acceptedResearchRows } = await supabase
+      .from("research_requests")
+      .select("requester_id, receiver_id, status")
+      .eq("status", "accepted")
+      .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
 
     (acceptedResearchRows || []).forEach((request: any) => {
       addCandidatePair(request.requester_id, request.receiver_id);
     });
 
-    const { data: acceptedProfileRows, error: acceptedProfileError } =
-      await supabase
-        .from("profile_requests")
-        .select("requester_id, receiver_id, status")
-        .eq("status", "accepted")
-        .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
-
-    if (acceptedProfileError) {
-      console.log(
-        "LOAD ACCEPTED PROFILE REQUESTS ERROR:",
-        acceptedProfileError,
-      );
-    }
+    const { data: acceptedProfileRows } = await supabase
+      .from("profile_requests")
+      .select("requester_id, receiver_id, status")
+      .eq("status", "accepted")
+      .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
 
     (acceptedProfileRows || []).forEach((request: any) => {
       addCandidatePair(request.requester_id, request.receiver_id);
@@ -260,33 +262,68 @@ export default function WorkspaceClient() {
   };
 
   const loadWorkspaceDetails = async (workspaceId: string) => {
-    const { data: taskData, error: taskError } = await supabase
-      .from("workspace_tasks")
-      .select("*")
-      .eq("workspace_id", workspaceId)
-      .order("created_at", { ascending: false });
+    const [
+      taskResult,
+      fileResult,
+      milestoneResult,
+      meetingResult,
+      recordingResult,
+      updateResult,
+    ] = await Promise.all([
+      supabase
+        .from("workspace_tasks")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("created_at", { ascending: false }),
 
-    if (taskError) {
-      console.log("LOAD TASKS ERROR:", taskError);
-      alert(taskError.message);
-      setTasks([]);
-    } else {
-      setTasks((taskData || []) as WorkspaceTask[]);
-    }
+      supabase
+        .from("workspace_files")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("created_at", { ascending: false }),
 
-    const { data: fileData, error: fileError } = await supabase
-      .from("workspace_files")
-      .select("*")
-      .eq("workspace_id", workspaceId)
-      .order("created_at", { ascending: false });
+      supabase
+        .from("workspace_milestones")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("created_at", { ascending: false }),
 
-    if (fileError) {
-      console.log("LOAD FILES ERROR:", fileError);
-      alert(fileError.message);
-      setWorkspaceFiles([]);
-    } else {
-      setWorkspaceFiles((fileData || []) as WorkspaceFile[]);
-    }
+      supabase
+        .from("workspace_meetings")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("created_at", { ascending: false }),
+
+      supabase
+        .from("workspace_recordings")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("created_at", { ascending: false }),
+
+      supabase
+        .from("workspace_updates")
+        .select("*")
+        .eq("workspace_id", workspaceId)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (taskResult.error) console.log("LOAD TASKS ERROR:", taskResult.error);
+    if (fileResult.error) console.log("LOAD FILES ERROR:", fileResult.error);
+    if (milestoneResult.error)
+      console.log("LOAD MILESTONES ERROR:", milestoneResult.error);
+    if (meetingResult.error)
+      console.log("LOAD MEETINGS ERROR:", meetingResult.error);
+    if (recordingResult.error)
+      console.log("LOAD RECORDINGS ERROR:", recordingResult.error);
+    if (updateResult.error)
+      console.log("LOAD UPDATES ERROR:", updateResult.error);
+
+    setTasks((taskResult.data || []) as WorkspaceTask[]);
+    setWorkspaceFiles((fileResult.data || []) as WorkspaceFile[]);
+    setMilestones((milestoneResult.data || []) as WorkspaceMilestone[]);
+    setMeetings((meetingResult.data || []) as WorkspaceMeeting[]);
+    setRecordings((recordingResult.data || []) as WorkspaceRecording[]);
+    setUpdates((updateResult.data || []) as WorkspaceUpdate[]);
 
     await loadTeamAndCollaborators(workspaceId);
   };
@@ -321,6 +358,10 @@ export default function WorkspaceClient() {
       setTasks([]);
       setWorkspaceFiles([]);
       setMembers([]);
+      setMilestones([]);
+      setMeetings([]);
+      setRecordings([]);
+      setUpdates([]);
       setCollaboratorOptions([]);
       setSelectedCollaboratorId("");
     }
@@ -345,6 +386,8 @@ export default function WorkspaceClient() {
 
   const handleSelectWorkspace = async (workspaceId: string) => {
     setSelectedWorkspaceId(workspaceId);
+    setActiveTab("overview");
+    setActiveMeeting(null);
     await loadWorkspaceDetails(workspaceId);
   };
 
@@ -369,6 +412,7 @@ export default function WorkspaceClient() {
         description: workspaceDescription.trim() || null,
         research_area: workspaceResearchArea.trim() || null,
         due_date: workspaceDueDate || null,
+        workspace_type: workspaceType,
         status: "active",
       })
       .select("id")
@@ -400,6 +444,7 @@ export default function WorkspaceClient() {
     setWorkspaceDescription("");
     setWorkspaceResearchArea("");
     setWorkspaceDueDate("");
+    setWorkspaceType("personal");
 
     await loadWorkspaces();
     setSelectedWorkspaceId(workspaceData.id);
@@ -408,9 +453,40 @@ export default function WorkspaceClient() {
     setCreatingWorkspace(false);
   };
 
+  const handleConvertToShared = async () => {
+    if (!selectedWorkspace) return;
+
+    const confirmed = window.confirm(
+      "Convert this personal workspace into a shared workspace?",
+    );
+
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("workspaces")
+      .update({
+        workspace_type: "shared",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", selectedWorkspace.id);
+
+    if (error) {
+      console.log("CONVERT WORKSPACE ERROR:", error);
+      alert(error.message);
+      return;
+    }
+
+    await loadWorkspaces();
+  };
+
   const handleAddWorkspaceMember = async () => {
-    if (!selectedWorkspaceId) {
+    if (!selectedWorkspaceId || !selectedWorkspace) {
       alert("Select a workspace first.");
+      return;
+    }
+
+    if (selectedWorkspace.workspace_type !== "shared") {
+      alert("Convert this personal workspace to shared first.");
       return;
     }
 
@@ -444,7 +520,7 @@ export default function WorkspaceClient() {
     const { error } = await supabase.from("workspace_members").insert({
       workspace_id: selectedWorkspaceId,
       user_id: memberIdToAdd,
-      role: "collaborator",
+      role: "member",
     });
 
     if (error) {
@@ -614,22 +690,185 @@ export default function WorkspaceClient() {
     setUploadingFile(false);
   };
 
+  const handleAddMilestone = async () => {
+    if (!selectedWorkspaceId) {
+      alert("Select a workspace first.");
+      return;
+    }
+
+    if (!milestoneTitle.trim()) {
+      alert("Add a milestone title.");
+      return;
+    }
+
+    setSavingMilestone(true);
+
+    const { error } = await supabase.from("workspace_milestones").insert({
+      workspace_id: selectedWorkspaceId,
+      created_by: userId,
+      title: milestoneTitle.trim(),
+      description: milestoneDescription.trim() || null,
+      due_date: milestoneDueDate || null,
+      status: "planned",
+    });
+
+    if (error) {
+      console.log("ADD MILESTONE ERROR:", error);
+      alert(error.message);
+      setSavingMilestone(false);
+      return;
+    }
+
+    setMilestoneTitle("");
+    setMilestoneDescription("");
+    setMilestoneDueDate("");
+
+    await loadWorkspaceDetails(selectedWorkspaceId);
+    setSavingMilestone(false);
+  };
+
+  const handleUpdateMilestoneStatus = async (
+    milestoneId: string,
+    nextStatus: string,
+  ) => {
+    const { error } = await supabase
+      .from("workspace_milestones")
+      .update({
+        status: nextStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", milestoneId);
+
+    if (error) {
+      console.log("UPDATE MILESTONE ERROR:", error);
+      alert(error.message);
+      return;
+    }
+
+    if (selectedWorkspaceId) {
+      await loadWorkspaceDetails(selectedWorkspaceId);
+    }
+  };
+
+ const handleCreateMeeting = async () => {
+  if (!selectedWorkspaceId) {
+    alert("Select a workspace first.");
+    return;
+  }
+
+  if (!userId) {
+    alert("You must be logged in.");
+    return;
+  }
+
+  if (!meetingTitle.trim()) {
+    alert("Add a meeting title.");
+    return;
+  }
+
+  setSavingMeeting(true);
+
+  try {
+    const roomName = `researchgram-${selectedWorkspaceId}-${Date.now()}`.replace(
+      /[^a-zA-Z0-9]/g,
+      "",
+    );
+
+    const meetingUrl = `https://meet.jit.si/${roomName}`;
+
+    const { data: createdMeeting, error } = await supabase
+      .from("workspace_meetings")
+      .insert({
+        workspace_id: selectedWorkspaceId,
+        created_by: userId,
+        title: meetingTitle.trim(),
+        provider: "jitsi",
+        room_name: roomName,
+        meeting_url: meetingUrl,
+        starts_at: meetingStart ? new Date(meetingStart).toISOString() : null,
+      })
+      .select("*")
+      .single();
+
+    if (error) {
+      console.log("CREATE MEETING ERROR:", error);
+      alert(error.message);
+      return;
+    }
+
+    setMeetingTitle("");
+    setMeetingStart("");
+
+    setMeetings((prev) => [createdMeeting as WorkspaceMeeting, ...prev]);
+    setActiveMeeting(createdMeeting as WorkspaceMeeting);
+    setActiveTab("meetings");
+  } catch (error) {
+    console.log("CREATE MEETING UNKNOWN ERROR:", error);
+    alert("Could not create meeting. Check browser console for details.");
+  } finally {
+    setSavingMeeting(false);
+  }
+};
+
+  const handleAddUpdate = async () => {
+    if (!selectedWorkspaceId) {
+      alert("Select a workspace first.");
+      return;
+    }
+
+    if (!updateText.trim()) {
+      alert("Write an update first.");
+      return;
+    }
+
+    setSavingUpdate(true);
+
+    const { error } = await supabase.from("workspace_updates").insert({
+      workspace_id: selectedWorkspaceId,
+      author_id: userId,
+      update_type: "note",
+      body: updateText.trim(),
+    });
+
+    if (error) {
+      console.log("ADD UPDATE ERROR:", error);
+      alert(error.message);
+      setSavingUpdate(false);
+      return;
+    }
+
+    setUpdateText("");
+
+    await loadWorkspaceDetails(selectedWorkspaceId);
+    setSavingUpdate(false);
+  };
+
   return (
     <WorkspaceUI
       loading={loading}
       userId={userId}
+      activeTab={activeTab}
+      setActiveTab={setActiveTab}
       workspaces={workspaces}
       selectedWorkspaceId={selectedWorkspaceId}
       selectedWorkspace={selectedWorkspace}
       tasks={tasks}
       workspaceFiles={workspaceFiles}
       members={members}
+      milestones={milestones}
+      meetings={meetings}
+      recordings={recordings}
+      updates={updates}
       collaboratorOptions={collaboratorOptions}
       selectedCollaboratorId={selectedCollaboratorId}
       creatingWorkspace={creatingWorkspace}
       addingTask={addingTask}
       uploadingFile={uploadingFile}
       addingMember={addingMember}
+      savingMilestone={savingMilestone}
+      savingMeeting={savingMeeting}
+      savingUpdate={savingUpdate}
+      workspaceType={workspaceType}
       workspaceTitle={workspaceTitle}
       workspaceDescription={workspaceDescription}
       workspaceResearchArea={workspaceResearchArea}
@@ -639,9 +878,17 @@ export default function WorkspaceClient() {
       taskPriority={taskPriority}
       taskDueDate={taskDueDate}
       taskAssignedTo={taskAssignedTo}
+      milestoneTitle={milestoneTitle}
+      milestoneDescription={milestoneDescription}
+      milestoneDueDate={milestoneDueDate}
+      meetingTitle={meetingTitle}
+      meetingStart={meetingStart}
+      activeMeeting={activeMeeting}
+      updateText={updateText}
       selectedFiles={selectedFiles}
       progress={progress}
       statusCounts={statusCounts}
+      setWorkspaceType={setWorkspaceType}
       setWorkspaceTitle={setWorkspaceTitle}
       setWorkspaceDescription={setWorkspaceDescription}
       setWorkspaceResearchArea={setWorkspaceResearchArea}
@@ -651,15 +898,30 @@ export default function WorkspaceClient() {
       setTaskPriority={setTaskPriority}
       setTaskDueDate={setTaskDueDate}
       setTaskAssignedTo={setTaskAssignedTo}
+      setMilestoneTitle={setMilestoneTitle}
+      setMilestoneDescription={setMilestoneDescription}
+      setMilestoneDueDate={setMilestoneDueDate}
+      setMeetingTitle={setMeetingTitle}
+      setMeetingStart={setMeetingStart}
+      setActiveMeeting={setActiveMeeting}
+      setUpdateText={setUpdateText}
       setSelectedFiles={setSelectedFiles}
       setSelectedCollaboratorId={setSelectedCollaboratorId}
       handleSelectWorkspace={handleSelectWorkspace}
       handleCreateWorkspace={handleCreateWorkspace}
+      handleConvertToShared={handleConvertToShared}
       handleAddWorkspaceMember={handleAddWorkspaceMember}
       handleRemoveWorkspaceMember={handleRemoveWorkspaceMember}
       handleAddTask={handleAddTask}
       handleUpdateTaskStatus={handleUpdateTaskStatus}
       handleUploadFiles={handleUploadFiles}
+      handleAddMilestone={handleAddMilestone}
+      handleUpdateMilestoneStatus={handleUpdateMilestoneStatus}
+      handleCreateMeeting={handleCreateMeeting}
+      handleAddUpdate={handleAddUpdate}
+      handleReloadCurrentWorkspace={() =>
+        selectedWorkspaceId ? loadWorkspaceDetails(selectedWorkspaceId) : null
+      }
     />
   );
 }

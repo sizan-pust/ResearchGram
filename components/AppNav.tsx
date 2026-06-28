@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import NotificationBell from "@/components/NotificationBell";
 
 type ActivePage =
   | "feed"
@@ -10,7 +11,8 @@ type ActivePage =
   | "network"
   | "requests"
   | "messages"
-  | "profile";
+  | "profile"
+  | "notifications";
 
 type AppNavProps = {
   activePage: ActivePage;
@@ -22,62 +24,57 @@ export default function AppNav({ activePage }: AppNavProps) {
   const [userId, setUserId] = useState("");
   const [pendingRequestCount, setPendingRequestCount] = useState(0);
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [searchText, setSearchText] = useState("");
 
-  const loadCounts = async (currentUserId: string) => {
-    if (!currentUserId) return;
-
-    // const { count: requestCount, error: requestError } = await supabase
-    //   .from("research_requests")
-    //   .select("id", { count: "exact", head: true })
-    //   .eq("receiver_id", currentUserId)
-    //   .eq("status", "pending");
-
-    // if (requestError) {
-    //   console.log("NAV REQUEST COUNT ERROR:", requestError);
-    // } else {
-    //   setPendingRequestCount(requestCount || 0);
-    // }
-    const { count: researchRequestCount, error: researchRequestError } =
-      await supabase
-        .from("research_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("receiver_id", currentUserId)
-        .eq("status", "pending");
-
-    if (researchRequestError) {
-      console.log("NAV RESEARCH REQUEST COUNT ERROR:", researchRequestError);
+  const loadCounts = useCallback(async (currentUserId: string) => {
+    if (!currentUserId) {
+      setPendingRequestCount(0);
+      setUnreadMessageCount(0);
+      return;
     }
 
-    const { count: profileRequestCount, error: profileRequestError } =
-      await supabase
-        .from("profile_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("receiver_id", currentUserId)
-        .eq("status", "pending");
+    const [researchResult, profileResult, paperAccessResult] =
+      await Promise.all([
+        supabase
+          .from("research_requests")
+          .select("id", { count: "exact", head: true })
+          .eq("receiver_id", currentUserId)
+          .eq("status", "pending"),
 
-    if (profileRequestError) {
-      console.log("NAV PROFILE REQUEST COUNT ERROR:", profileRequestError);
+        supabase
+          .from("profile_requests")
+          .select("id", { count: "exact", head: true })
+          .eq("receiver_id", currentUserId)
+          .eq("status", "pending"),
+
+        supabase
+          .from("paper_access_requests")
+          .select("id", { count: "exact", head: true })
+          .eq("owner_id", currentUserId)
+          .eq("status", "pending"),
+      ]);
+
+    if (researchResult.error) {
+      console.log("NAV RESEARCH REQUEST COUNT ERROR:", researchResult.error);
     }
 
-    const { count: paperAccessRequestCount, error: paperAccessRequestError } =
-      await supabase
-        .from("paper_access_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("owner_id", currentUserId)
-        .eq("status", "pending");
+    if (profileResult.error) {
+      console.log("NAV PROFILE REQUEST COUNT ERROR:", profileResult.error);
+    }
 
-    if (paperAccessRequestError) {
+    if (paperAccessResult.error) {
       console.log(
         "NAV PAPER ACCESS REQUEST COUNT ERROR:",
-        paperAccessRequestError,
+        paperAccessResult.error,
       );
     }
 
-    setPendingRequestCount(
-      (researchRequestCount || 0) +
-        (profileRequestCount || 0) +
-        (paperAccessRequestCount || 0),
-    );
+    const totalPendingRequests =
+      (researchResult.count || 0) +
+      (profileResult.count || 0) +
+      (paperAccessResult.count || 0);
+
+    setPendingRequestCount(totalPendingRequests);
 
     const { data: conversations, error: conversationError } = await supabase
       .from("conversations")
@@ -109,13 +106,15 @@ export default function AppNav({ activePage }: AppNavProps) {
 
     if (unreadError) {
       console.log("NAV UNREAD MESSAGE COUNT ERROR:", unreadError);
-    } else {
-      setUnreadMessageCount(unreadCount || 0);
+      setUnreadMessageCount(0);
+      return;
     }
-  };
+
+    setUnreadMessageCount(unreadCount || 0);
+  }, []);
 
   useEffect(() => {
-    const load = async () => {
+    const loadUser = async () => {
       const { data } = await supabase.auth.getUser();
 
       if (!data.user) {
@@ -129,11 +128,37 @@ export default function AppNav({ activePage }: AppNavProps) {
       await loadCounts(data.user.id);
     };
 
-    load();
-  }, []);
+    loadUser();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const nextUserId = session?.user?.id || "";
+
+      setUserId(nextUserId);
+
+      if (nextUserId) {
+        await loadCounts(nextUserId);
+      } else {
+        setPendingRequestCount(0);
+        setUnreadMessageCount(0);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [loadCounts]);
 
   useEffect(() => {
     if (!userId) return;
+
+    const refreshCounts = async () => {
+      await loadCounts(userId);
+    };
+
+    window.addEventListener("focus", refreshCounts);
+    window.addEventListener("researchgram:refresh-nav-counts", refreshCounts);
 
     const channel = supabase
       .channel(`app-nav-live-${userId}`)
@@ -144,9 +169,7 @@ export default function AppNav({ activePage }: AppNavProps) {
           schema: "public",
           table: "messages",
         },
-        async () => {
-          await loadCounts(userId);
-        },
+        refreshCounts,
       )
       .on(
         "postgres_changes",
@@ -154,10 +177,9 @@ export default function AppNav({ activePage }: AppNavProps) {
           event: "*",
           schema: "public",
           table: "research_requests",
+          filter: `receiver_id=eq.${userId}`,
         },
-        async () => {
-          await loadCounts(userId);
-        },
+        refreshCounts,
       )
       .on(
         "postgres_changes",
@@ -165,10 +187,9 @@ export default function AppNav({ activePage }: AppNavProps) {
           event: "*",
           schema: "public",
           table: "profile_requests",
+          filter: `receiver_id=eq.${userId}`,
         },
-        async () => {
-          await loadCounts(userId);
-        },
+        refreshCounts,
       )
       .on(
         "postgres_changes",
@@ -176,10 +197,9 @@ export default function AppNav({ activePage }: AppNavProps) {
           event: "*",
           schema: "public",
           table: "paper_access_requests",
+          filter: `owner_id=eq.${userId}`,
         },
-        async () => {
-          await loadCounts(userId);
-        },
+        refreshCounts,
       )
       .on(
         "postgres_changes",
@@ -188,18 +208,33 @@ export default function AppNav({ activePage }: AppNavProps) {
           schema: "public",
           table: "conversations",
         },
-        async () => {
-          await loadCounts(userId);
-        },
+        refreshCounts,
       )
-      .subscribe((status) => {
-        console.log("APP NAV REALTIME STATUS:", status);
-      });
+      .subscribe();
+
+    refreshCounts();
 
     return () => {
+      window.removeEventListener("focus", refreshCounts);
+      window.removeEventListener(
+        "researchgram:refresh-nav-counts",
+        refreshCounts,
+      );
+
       supabase.removeChannel(channel);
     };
-  }, [userId]);
+  }, [userId, loadCounts]);
+
+  const handleGlobalSearch = () => {
+    const value = searchText.trim();
+
+    if (!value) {
+      router.push("/search");
+      return;
+    }
+
+    router.push(`/search?q=${encodeURIComponent(value)}`);
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -231,6 +266,21 @@ export default function AppNav({ activePage }: AppNavProps) {
           ResearchGram
         </button>
 
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleGlobalSearch();
+          }}
+          className="mx-4 hidden max-w-md flex-1 md:block"
+        >
+          <input
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="Search researchers, papers..."
+            className="w-full rounded-full border border-gray-200 bg-gray-50 px-4 py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-blue-500 focus:bg-white"
+          />
+        </form>
+
         <div className="flex items-center gap-2 text-sm">
           <button
             onClick={() => router.push("/feed")}
@@ -238,6 +288,7 @@ export default function AppNav({ activePage }: AppNavProps) {
           >
             Feed
           </button>
+
           <button
             onClick={() => router.push("/researchers")}
             className={navButtonClass("researchers")}
@@ -251,6 +302,7 @@ export default function AppNav({ activePage }: AppNavProps) {
           >
             Network
           </button>
+
           <button
             onClick={() => router.push("/requests")}
             className={navButtonClass("requests")}
@@ -273,6 +325,8 @@ export default function AppNav({ activePage }: AppNavProps) {
           >
             Profile
           </button>
+
+          <NotificationBell />
 
           <button
             onClick={handleLogout}

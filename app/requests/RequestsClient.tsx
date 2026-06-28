@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { createNotification } from "@/lib/notifications";
 import RequestsUI, {
   type ContentPost,
   type Profile,
@@ -21,9 +22,7 @@ function sortByNewest(requests: UnifiedRequestView[]) {
 
 function getProfileName(profile: Profile | null | undefined) {
   return (
-    profile?.full_name ||
-    profile?.email?.split("@")[0] ||
-    "ResearchGram User"
+    profile?.full_name || profile?.email?.split("@")[0] || "ResearchGram User"
   );
 }
 
@@ -116,7 +115,10 @@ export default function RequestsClient() {
     }
 
     if (researchSentResult.error) {
-      console.log("FETCH SENT RESEARCH REQUESTS ERROR:", researchSentResult.error);
+      console.log(
+        "FETCH SENT RESEARCH REQUESTS ERROR:",
+        researchSentResult.error,
+      );
     }
 
     if (profileReceivedResult.error) {
@@ -127,7 +129,10 @@ export default function RequestsClient() {
     }
 
     if (profileSentResult.error) {
-      console.log("FETCH SENT PROFILE REQUESTS ERROR:", profileSentResult.error);
+      console.log(
+        "FETCH SENT PROFILE REQUESTS ERROR:",
+        profileSentResult.error,
+      );
     }
 
     if (paperReceivedResult.error) {
@@ -138,7 +143,10 @@ export default function RequestsClient() {
     }
 
     if (paperSentResult.error) {
-      console.log("FETCH SENT PAPER ACCESS REQUESTS ERROR:", paperSentResult.error);
+      console.log(
+        "FETCH SENT PAPER ACCESS REQUESTS ERROR:",
+        paperSentResult.error,
+      );
     }
 
     const researchReceived = researchReceivedResult.data || [];
@@ -400,6 +408,26 @@ export default function RequestsClient() {
       if (nextStatus === "accepted") {
         await ensureResearchConversation(request);
       }
+      if (request.requester_id) {
+        await createNotification({
+          recipientId: request.requester_id,
+          actorId: userId,
+          notificationType:
+            nextStatus === "accepted" ? "request_accepted" : "request_declined",
+          title:
+            nextStatus === "accepted"
+              ? "Collaboration request accepted"
+              : "Collaboration request declined",
+          body:
+            nextStatus === "accepted"
+              ? "Your collaboration request was accepted."
+              : "Your collaboration request was declined.",
+          linkUrl: nextStatus === "accepted" ? "/messages" : "/requests",
+          contentId: request.content_id,
+          requestId: request.id,
+          requestKind: "research",
+        });
+      }
     }
 
     if (request.kind === "profile") {
@@ -444,6 +472,25 @@ export default function RequestsClient() {
           return;
         }
       }
+      if (request.requester_id) {
+        await createNotification({
+          recipientId: request.requester_id,
+          actorId: userId,
+          notificationType:
+            nextStatus === "accepted" ? "request_accepted" : "request_declined",
+          title:
+            nextStatus === "accepted"
+              ? "Profile request accepted"
+              : "Profile request declined",
+          body:
+            nextStatus === "accepted"
+              ? "Your profile request was accepted."
+              : "Your profile request was declined.",
+          linkUrl: "/requests",
+          requestId: request.id,
+          requestKind: "profile",
+        });
+      }
     }
 
     if (request.kind === "paper_access") {
@@ -475,9 +522,39 @@ export default function RequestsClient() {
         setUpdatingId(null);
         return;
       }
+      if (request.requester_id) {
+        await createNotification({
+          recipientId: request.requester_id,
+          actorId: userId,
+          notificationType:
+            nextStatus === "approved"
+              ? "paper_access_approved"
+              : "paper_access_rejected",
+          title:
+            nextStatus === "approved"
+              ? "Full paper access approved"
+              : "Full paper access rejected",
+          body:
+            nextStatus === "approved"
+              ? "Your full paper access request was approved. You can now open the paper from Feed."
+              : "Your full paper access request was rejected.",
+          linkUrl:
+            nextStatus === "approved" && request.content_id
+              ? `/feed?post=${request.content_id}`
+              : "/requests",
+          contentId: request.content_id,
+          requestId: request.id,
+          requestKind: "paper_access",
+        });
+      }
     }
 
     await loadRequests();
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("researchgram:refresh-nav-counts"));
+    }
+
     setUpdatingId(null);
   };
 
@@ -508,7 +585,9 @@ export default function RequestsClient() {
       handleUpdateStatus={handleUpdateStatus}
       handleOpenMessages={handleOpenMessages}
       handleGoToFeed={() => router.push("/feed")}
-      handleGoToProfile={(profileId) => router.push(`/researchers/${profileId}`)}
+      handleGoToProfile={(profileId) =>
+        router.push(`/researchers/${profileId}`)
+      }
       getProfileName={getProfileName}
     />
   );

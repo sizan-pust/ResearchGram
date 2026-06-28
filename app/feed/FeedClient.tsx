@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { createNotification } from "@/lib/notifications";
 import FeedUI, {
   type Attachment,
   type Comment,
@@ -462,15 +463,34 @@ export default function FeedClient() {
 
       setUserId(authData.user.id);
 
-      const { data: profileData } = await supabase
+      const { data: profileData, error: profileError } = await supabase
         .from("profiles")
-        .select("full_name")
+        .select(
+          "full_name, department, skills, interests, user_role, academic_level, onboarding_completed",
+        )
         .eq("id", authData.user.id)
-        .single();
+        .maybeSingle();
 
-      if (profileData) {
-        setFullName(profileData.full_name || "");
+      if (profileError) {
+        console.log("FEED PROFILE CHECK ERROR:", profileError);
       }
+
+      const needsOnboarding =
+        !profileData ||
+        !profileData.onboarding_completed ||
+        !profileData.full_name ||
+        !profileData.department ||
+        !profileData.skills ||
+        !profileData.interests ||
+        !profileData.user_role ||
+        !profileData.academic_level;
+
+      if (needsOnboarding) {
+        router.push("/onboarding?next=/feed");
+        return;
+      }
+
+      setFullName(profileData.full_name || "");
 
       await fetchPosts(authData.user.id);
       setLoading(false);
@@ -768,6 +788,21 @@ export default function FeedClient() {
 
     await fetchPosts(userId);
     setCommentingPostId(null);
+    const targetPost = posts.find((item) => item.id === contentId);
+
+    if (targetPost?.user_id && targetPost.user_id !== userId) {
+      await createNotification({
+        recipientId: targetPost.user_id,
+        actorId: userId,
+        notificationType: "comment",
+        title: "New comment on your post",
+        body: `${fullName || "A researcher"} commented on your post: ${
+          targetPost.title || "Untitled post"
+        }`,
+        linkUrl: `/feed?post=${targetPost.id}`,
+        contentId: targetPost.id,
+      });
+    }
   };
 
   const handleToggleSave = async (post: Post) => {
@@ -831,14 +866,18 @@ export default function FeedClient() {
 
     setRequestingPostId(post.id);
 
-    const { error } = await supabase.from("research_requests").insert({
-      content_id: post.id,
-      requester_id: userId,
-      receiver_id: post.user_id,
-      request_type: "collaboration",
-      message,
-      status: "pending",
-    });
+    const { data: insertedRequest, error } = await supabase
+      .from("research_requests")
+      .insert({
+        content_id: post.id,
+        requester_id: userId,
+        receiver_id: post.user_id,
+        request_type: "collaboration",
+        message: requestDrafts[post.id]?.trim() || null,
+        status: "pending",
+      })
+      .select("id")
+      .single();
 
     if (error) {
       console.log("COLLABORATION REQUEST ERROR:", error);
@@ -856,6 +895,19 @@ export default function FeedClient() {
 
     await fetchPosts(userId);
     setRequestingPostId(null);
+    await createNotification({
+      recipientId: post.user_id,
+      actorId: userId,
+      notificationType: "collaboration_request",
+      title: "New collaboration request",
+      body: `${fullName || "A researcher"} requested to collaborate on: ${
+        post.title || "Untitled post"
+      }`,
+      linkUrl: "/requests",
+      contentId: post.id,
+      requestId: insertedRequest?.id,
+      requestKind: "research",
+    });
   };
 
   const handleRequestFullPaperAccess = async (post: Post) => {
@@ -885,13 +937,17 @@ export default function FeedClient() {
 
     setPaperAccessRequestingPostId(post.id);
 
-    const { error } = await supabase.from("paper_access_requests").insert({
-      content_id: post.id,
-      requester_id: userId,
-      owner_id: post.user_id,
-      reason,
-      status: "pending",
-    });
+    const { data: insertedRequest, error } = await supabase
+      .from("paper_access_requests")
+      .insert({
+        content_id: post.id,
+        requester_id: userId,
+        owner_id: post.user_id,
+        reason: paperAccessRequestDrafts[post.id]?.trim() || null,
+        status: "pending",
+      })
+      .select("id")
+      .single();
 
     if (error) {
       console.log("PAPER ACCESS REQUEST ERROR:", error);
@@ -909,6 +965,19 @@ export default function FeedClient() {
     await fetchPosts(userId);
     setPaperAccessRequestingPostId(null);
     alert("Full paper access request sent.");
+    await createNotification({
+      recipientId: post.user_id,
+      actorId: userId,
+      notificationType: "paper_access_request",
+      title: "New full paper access request",
+      body: `${fullName || "A researcher"} requested access to your paper: ${
+        post.title || "Untitled paper"
+      }`,
+      linkUrl: "/requests",
+      contentId: post.id,
+      requestId: insertedRequest?.id,
+      requestKind: "paper_access",
+    });
   };
   const handleCopyPostLink = async (post: Post) => {
     const link = `${window.location.origin}/feed?post=${post.id}`;
@@ -1053,6 +1122,9 @@ export default function FeedClient() {
       handleReportPost={handleReportPost}
       handleGoToWorkspace={() => router.push("/workspace")}
       handleGoToMentorship={() => router.push("/mentorship")}
+      handleGoToResearcher={(profileId) =>
+        router.push(`/researchers/${profileId}`)
+      }
       handleGoToRecommendations={(postId) =>
         router.push(`/recommendations?postId=${postId}`)
       }

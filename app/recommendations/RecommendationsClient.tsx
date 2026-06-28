@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { createNotification } from "@/lib/notifications";
 import RecommendationsUI, {
   type ExistingRequest,
   type Profile,
@@ -302,59 +303,120 @@ export default function RecommendationsClient() {
     loadRequests();
   }, [userId, selectedPostId]);
 
-  const handleSendCollaborationRequest = async (receiver: Profile) => {
-    if (!selectedPost) {
-      alert("Select a research idea first.");
-      return;
-    }
+const handleSendCollaborationRequest = async (receiver: Profile) => {
+  if (!selectedPost) {
+    alert("Select a research idea first.");
+    return;
+  }
 
-    if (!userId) {
-      alert("You must be logged in.");
-      return;
-    }
+  if (!userId) {
+    alert("You must be logged in.");
+    return;
+  }
 
-    const existing = existingRequestMap.get(receiver.id);
+  if (receiver.id === userId) {
+    alert("You cannot send a request to yourself.");
+    return;
+  }
 
-    if (existing) {
-      alert(`Request already ${existing.status}.`);
-      return;
-    }
+  const existing = existingRequestMap.get(receiver.id);
 
-    setRequestingId(receiver.id);
+  if (existing) {
+    alert(
+      existing.status === "pending"
+        ? "You already sent a request to this researcher."
+        : `You already have a ${existing.status} request with this researcher.`,
+    );
+    return;
+  }
 
-    const postTitle = selectedPost.title || "your research idea";
+  setRequestingId(receiver.id);
 
-    const message = `Hi ${
-      receiver.full_name || "Researcher"
-    }, I found your profile relevant to my research post "${postTitle}". I would like to collaborate or discuss possible contribution areas.`;
+  const postTitle = selectedPost.title || "your research idea";
 
-    const { error } = await supabase.from("research_requests").insert({
+  const message = `Hi ${
+    receiver.full_name || "Researcher"
+  }, I found your profile relevant to my research post "${postTitle}". I would like to collaborate or discuss possible contribution areas.`;
+
+  const { data: alreadyExists, error: existingCheckError } = await supabase
+    .from("research_requests")
+    .select("id, receiver_id, status")
+    .eq("content_id", selectedPost.id)
+    .eq("requester_id", userId)
+    .eq("receiver_id", receiver.id)
+    .eq("request_type", "collaboration")
+    .maybeSingle();
+
+  if (existingCheckError) {
+    console.log("CHECK EXISTING RECOMMENDATION REQUEST ERROR:", existingCheckError);
+  }
+
+  if (alreadyExists) {
+    setExistingRequests((prev) => {
+      const existsInState = prev.some((item) => item.id === alreadyExists.id);
+
+      if (existsInState) return prev;
+
+      return [...prev, alreadyExists as ExistingRequest];
+    });
+
+    setRequestingId(null);
+
+    alert(
+      alreadyExists.status === "pending"
+        ? "You already sent a request to this researcher."
+        : `You already have a ${alreadyExists.status} request with this researcher.`,
+    );
+
+    return;
+  }
+
+  const { data: insertedRequest, error } = await supabase
+    .from("research_requests")
+    .insert({
       content_id: selectedPost.id,
       requester_id: userId,
       receiver_id: receiver.id,
       request_type: "collaboration",
       message,
       status: "pending",
-    });
+    })
+    .select("id, receiver_id, status")
+    .single();
 
-    if (error) {
-      console.log("SEND REQUEST ERROR:", error);
+  if (error) {
+    console.log("SEND REQUEST ERROR:", error);
+
+    if (error.code === "23505") {
+      alert("You already sent a request to this researcher for this post.");
+    } else {
       alert(error.message);
-      setRequestingId(null);
-      return;
     }
 
-    const { data } = await supabase
-      .from("research_requests")
-      .select("id, receiver_id, status")
-      .eq("content_id", selectedPost.id)
-      .eq("requester_id", userId)
-      .eq("request_type", "collaboration");
-
-    setExistingRequests((data || []) as ExistingRequest[]);
     setRequestingId(null);
-    alert("Collaboration request sent.");
-  };
+    return;
+  }
+
+  await createNotification({
+    recipientId: receiver.id,
+    actorId: userId,
+    notificationType: "collaboration_request",
+    title: "New collaboration request",
+    body: `A researcher requested to collaborate with you on: ${postTitle}`,
+    linkUrl: "/requests",
+    contentId: selectedPost.id,
+    requestId: insertedRequest?.id,
+    requestKind: "research",
+  });
+
+  setExistingRequests((prev) => [
+    ...prev,
+    insertedRequest as ExistingRequest,
+  ]);
+
+  setRequestingId(null);
+  alert("Collaboration request sent.");
+};
 
   return (
     <RecommendationsUI

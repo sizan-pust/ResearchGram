@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import AppNav from "@/components/AppNav";
 import FileViewerModal, { type ViewerFile } from "@/components/FileViewerModal";
+import ProfileHoverCard from "@/components/ProfileHoverCard";
 
 export type Profile = {
   full_name: string | null;
@@ -173,6 +174,7 @@ type FeedUIProps = {
 
   handleGoToWorkspace: () => void;
   handleGoToMentorship: () => void;
+  handleGoToResearcher: (profileId: string) => void;
   handleGoToRecommendations: (postId: string) => void;
 };
 
@@ -496,9 +498,11 @@ export default function FeedUI({
   handleReportPost,
   handleGoToWorkspace,
   handleGoToMentorship,
+  handleGoToResearcher,
   handleGoToRecommendations,
 }: FeedUIProps) {
   const isPaperPost = contentCategory === "research_paper";
+  const [linkedPostId, setLinkedPostId] = useState<string | null>(null);
   const [viewerFiles, setViewerFiles] = useState<ViewerFile[]>([]);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [openPostMenuId, setOpenPostMenuId] = useState<string | null>(null);
@@ -519,6 +523,27 @@ export default function FeedUI({
     setViewerFiles(files);
     setViewerIndex(index);
   };
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const postId = params.get("post");
+
+    if (!postId) return;
+
+    setLinkedPostId(postId);
+
+    const timeout = window.setTimeout(() => {
+      const element = document.getElementById(`post-${postId}`);
+
+      if (element) {
+        element.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }
+    }, 400);
+
+    return () => window.clearTimeout(timeout);
+  }, [posts.length]);
 
   if (loading) {
     return (
@@ -915,31 +940,76 @@ export default function FeedUI({
 
               return (
                 <div
+                  id={`post-${post.id}`}
                   key={post.id}
-                  className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm transition hover:shadow-md"
+                  className={`rounded-3xl border bg-white p-5 shadow-sm transition hover:shadow-md ${
+                    linkedPostId === post.id
+                      ? "border-blue-300 ring-4 ring-blue-100"
+                      : "border-gray-100"
+                  }`}
                 >
                   <div className="mb-4 flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3">
-                      <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-indigo-100">
-                        {post.profiles?.profile_pic_url ? (
-                          <img
-                            src={post.profiles.profile_pic_url}
-                            alt={post.profiles?.full_name || "Profile photo"}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-sm font-bold text-blue-700">
-                            {(post.profiles?.full_name || "R")
-                              .charAt(0)
-                              .toUpperCase()}
-                          </div>
-                        )}
-                      </div>
+                      <ProfileHoverCard
+                        profileId={post.user_id}
+                        fullName={post.profiles?.full_name}
+                        email={post.profiles?.email}
+                        department={post.profiles?.department}
+                        profilePicUrl={post.profiles?.profile_pic_url}
+                        subtitle={
+                          isResearchPaper
+                            ? "This researcher published a research paper. View profile for skills, interests, and recent academic activity."
+                            : "View this researcher's academic profile, skills, interests, and recent posts."
+                        }
+                        onViewProfile={handleGoToResearcher}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            post.user_id && handleGoToResearcher(post.user_id)
+                          }
+                          className="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-indigo-100"
+                        >
+                          {post.profiles?.profile_pic_url ? (
+                            <img
+                              src={post.profiles.profile_pic_url}
+                              alt={post.profiles?.full_name || "Profile photo"}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-sm font-bold text-blue-700">
+                              {(post.profiles?.full_name || "R")
+                                .charAt(0)
+                                .toUpperCase()}
+                            </div>
+                          )}
+                        </button>
+                      </ProfileHoverCard>
 
                       <div>
-                        <p className="font-semibold text-gray-900">
-                          {post.profiles?.full_name || "ResearchGram User"}
-                        </p>
+                        <ProfileHoverCard
+                          profileId={post.user_id}
+                          fullName={post.profiles?.full_name}
+                          email={post.profiles?.email}
+                          department={post.profiles?.department}
+                          profilePicUrl={post.profiles?.profile_pic_url}
+                          subtitle={
+                            isResearchPaper
+                              ? "This researcher published a research paper. View profile for skills, interests, and recent academic activity."
+                              : "View this researcher's academic profile, skills, interests, and recent posts."
+                          }
+                          onViewProfile={handleGoToResearcher}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              post.user_id && handleGoToResearcher(post.user_id)
+                            }
+                            className="font-semibold text-gray-900 hover:text-blue-700 hover:underline"
+                          >
+                            {post.profiles?.full_name || "ResearchGram User"}
+                          </button>
+                        </ProfileHoverCard>
 
                         <p className="text-xs text-gray-500">
                           {post.profiles?.department || "Research community"} ·{" "}
@@ -1461,78 +1531,78 @@ export default function FeedUI({
         </aside>
       </div>
       <FileViewerModal
-  open={viewerFiles.length > 0}
-  files={viewerFiles}
-  currentIndex={viewerIndex}
-  onChangeIndex={setViewerIndex}
-  onClose={() => {
-    setViewerFiles([]);
-    setViewerIndex(0);
-  }}
-/>
-
-{reportingPost && (
-  <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 px-4">
-    <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
-      <h2 className="text-xl font-bold text-gray-950">Report post</h2>
-
-      <p className="mt-2 text-sm text-gray-500">
-        Tell us why this post should be reviewed.
-      </p>
-
-      <select
-        value={reportReason}
-        onChange={(e) => setReportReason(e.target.value)}
-        className="mt-5 w-full rounded-2xl border border-gray-200 p-3 text-sm text-gray-900 outline-none focus:border-blue-500"
-      >
-        <option value="spam">Spam or misleading</option>
-        <option value="abuse">Abuse or harassment</option>
-        <option value="copyright">Copyright concern</option>
-        <option value="inappropriate">Inappropriate content</option>
-        <option value="other">Other</option>
-      </select>
-
-      <textarea
-        value={reportDetails}
-        onChange={(e) => setReportDetails(e.target.value)}
-        placeholder="Add optional details..."
-        className="mt-3 min-h-[120px] w-full rounded-2xl border border-gray-200 p-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-blue-500"
+        open={viewerFiles.length > 0}
+        files={viewerFiles}
+        currentIndex={viewerIndex}
+        onChangeIndex={setViewerIndex}
+        onClose={() => {
+          setViewerFiles([]);
+          setViewerIndex(0);
+        }}
       />
 
-      <div className="mt-5 flex justify-end gap-3">
-        <button
-          type="button"
-          onClick={() => {
-            setReportingPost(null);
-            setReportReason("spam");
-            setReportDetails("");
-          }}
-          className="rounded-full px-5 py-2 text-sm font-semibold text-gray-600 transition hover:bg-gray-100"
-        >
-          Cancel
-        </button>
+      {reportingPost && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl">
+            <h2 className="text-xl font-bold text-gray-950">Report post</h2>
 
-        <button
-          type="button"
-          onClick={async () => {
-            await handleReportPost(
-              reportingPost,
-              reportReason,
-              reportDetails,
-            );
+            <p className="mt-2 text-sm text-gray-500">
+              Tell us why this post should be reviewed.
+            </p>
 
-            setReportingPost(null);
-            setReportReason("spam");
-            setReportDetails("");
-          }}
-          className="rounded-full bg-red-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
-        >
-          Submit report
-        </button>
-      </div>
-    </div>
-  </div>
-)}
+            <select
+              value={reportReason}
+              onChange={(e) => setReportReason(e.target.value)}
+              className="mt-5 w-full rounded-2xl border border-gray-200 p-3 text-sm text-gray-900 outline-none focus:border-blue-500"
+            >
+              <option value="spam">Spam or misleading</option>
+              <option value="abuse">Abuse or harassment</option>
+              <option value="copyright">Copyright concern</option>
+              <option value="inappropriate">Inappropriate content</option>
+              <option value="other">Other</option>
+            </select>
+
+            <textarea
+              value={reportDetails}
+              onChange={(e) => setReportDetails(e.target.value)}
+              placeholder="Add optional details..."
+              className="mt-3 min-h-[120px] w-full rounded-2xl border border-gray-200 p-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-blue-500"
+            />
+
+            <div className="mt-5 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setReportingPost(null);
+                  setReportReason("spam");
+                  setReportDetails("");
+                }}
+                className="rounded-full px-5 py-2 text-sm font-semibold text-gray-600 transition hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  await handleReportPost(
+                    reportingPost,
+                    reportReason,
+                    reportDetails,
+                  );
+
+                  setReportingPost(null);
+                  setReportReason("spam");
+                  setReportDetails("");
+                }}
+                className="rounded-full bg-red-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
+              >
+                Submit report
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
