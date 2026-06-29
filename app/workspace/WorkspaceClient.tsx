@@ -29,7 +29,11 @@ function getFileCategory(file: File) {
 
   if (mime.startsWith("image/")) return "image";
   if (mime.includes("pdf") || name.endsWith(".pdf")) return "paper";
-  if (name.endsWith(".csv") || name.endsWith(".xlsx") || name.endsWith(".xls")) {
+  if (
+    name.endsWith(".csv") ||
+    name.endsWith(".xlsx") ||
+    name.endsWith(".xls")
+  ) {
     return "dataset";
   }
 
@@ -77,8 +81,7 @@ export default function WorkspaceClient() {
   const [savingMeeting, setSavingMeeting] = useState(false);
   const [savingUpdate, setSavingUpdate] = useState(false);
 
-  const [workspaceType, setWorkspaceType] =
-    useState<WorkspaceType>("personal");
+  const [workspaceType, setWorkspaceType] = useState<WorkspaceType>("personal");
   const [workspaceTitle, setWorkspaceTitle] = useState("");
   const [workspaceDescription, setWorkspaceDescription] = useState("");
   const [workspaceResearchArea, setWorkspaceResearchArea] = useState("");
@@ -96,8 +99,9 @@ export default function WorkspaceClient() {
 
   const [meetingTitle, setMeetingTitle] = useState("");
   const [meetingStart, setMeetingStart] = useState("");
-  const [activeMeeting, setActiveMeeting] =
-    useState<WorkspaceMeeting | null>(null);
+  const [activeMeeting, setActiveMeeting] = useState<WorkspaceMeeting | null>(
+    null,
+  );
 
   const [updateText, setUpdateText] = useState("");
 
@@ -391,6 +395,144 @@ export default function WorkspaceClient() {
     await loadWorkspaceDetails(workspaceId);
   };
 
+const ensureWorkspaceGroupConversation = async (
+  workspaceId: string,
+  title: string,
+  ownerId: string,
+) => {
+  const { data: existing, error: existingError } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("workspace_id", workspaceId)
+    .eq("conversation_type", "workspace_group")
+    .maybeSingle();
+
+  if (existingError) {
+    console.log("CHECK WORKSPACE GROUP CONVERSATION ERROR:", existingError);
+    return null;
+  }
+
+  if (existing?.id) {
+    await supabase.from("conversation_members").upsert(
+      {
+        conversation_id: existing.id,
+        user_id: ownerId,
+        role: "owner",
+        last_read_at: new Date().toISOString(),
+      },
+      {
+        onConflict: "conversation_id,user_id",
+      },
+    );
+
+    return existing.id as string;
+  }
+
+  const { data: conversation, error } = await supabase
+    .from("conversations")
+    .insert({
+      participant_one_id: ownerId,
+      participant_two_id: ownerId,
+      conversation_type: "workspace_group",
+      title: `Workspace: ${title}`,
+      workspace_id: workspaceId,
+      created_by: ownerId,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+
+  if (error || !conversation) {
+    console.log("CREATE WORKSPACE GROUP CONVERSATION ERROR:", error);
+    return null;
+  }
+
+  await supabase.from("conversation_members").upsert(
+    {
+      conversation_id: conversation.id,
+      user_id: ownerId,
+      role: "owner",
+      last_read_at: new Date().toISOString(),
+    },
+    {
+      onConflict: "conversation_id,user_id",
+    },
+  );
+
+  return conversation.id as string;
+};
+
+ const addUserToWorkspaceGroupConversation = async (
+  workspaceId: string,
+  userIdToAdd: string,
+  role = "member",
+) => {
+  const { data: conversation, error } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("workspace_id", workspaceId)
+    .eq("conversation_type", "workspace_group")
+    .maybeSingle();
+
+  if (error) {
+    console.log("FIND WORKSPACE GROUP CONVERSATION ERROR:", error);
+    return;
+  }
+
+  if (!conversation?.id) {
+    console.log("No workspace group conversation found for:", workspaceId);
+    return;
+  }
+
+  const { error: memberError } = await supabase
+    .from("conversation_members")
+    .upsert(
+      {
+        conversation_id: conversation.id,
+        user_id: userIdToAdd,
+        role,
+        last_read_at: new Date().toISOString(),
+      },
+      {
+        onConflict: "conversation_id,user_id",
+      },
+    );
+
+  if (memberError) {
+    console.log("ADD USER TO WORKSPACE GROUP CHAT ERROR:", memberError);
+  }
+};
+
+  const removeUserFromWorkspaceGroupConversation = async (
+  workspaceId: string,
+  userIdToRemove: string,
+) => {
+  const { data: conversation, error } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("workspace_id", workspaceId)
+    .eq("conversation_type", "workspace_group")
+    .maybeSingle();
+
+  if (error) {
+    console.log("FIND WORKSPACE GROUP CONVERSATION ERROR:", error);
+    return;
+  }
+
+  if (!conversation?.id) return;
+
+  const { error: removeError } = await supabase
+    .from("conversation_members")
+    .delete()
+    .eq("conversation_id", conversation.id)
+    .eq("user_id", userIdToRemove);
+
+  if (removeError) {
+    console.log("REMOVE USER FROM WORKSPACE GROUP CHAT ERROR:", removeError);
+  }
+};
+
   const handleCreateWorkspace = async () => {
     if (!userId) {
       alert("You must be logged in.");
@@ -439,7 +581,15 @@ export default function WorkspaceClient() {
         `Workspace created, but owner member row failed: ${memberError.message}`,
       );
     }
-
+    // ✅ ADD THIS PART HERE
+    // If the new workspace is shared, automatically create workspace group chat.
+    if (workspaceType === "shared") {
+      await ensureWorkspaceGroupConversation(
+        workspaceData.id,
+        workspaceTitle.trim(),
+        userId,
+      );
+    }
     setWorkspaceTitle("");
     setWorkspaceDescription("");
     setWorkspaceResearchArea("");
@@ -476,6 +626,11 @@ export default function WorkspaceClient() {
       return;
     }
 
+     await ensureWorkspaceGroupConversation(
+      selectedWorkspace.id,
+      selectedWorkspace.title,
+      userId,
+    );
     await loadWorkspaces();
   };
 
@@ -509,7 +664,9 @@ export default function WorkspaceClient() {
 
     const confirmAdd = window.confirm(
       `Add ${
-        selectedProfile.full_name || selectedProfile.email || "this collaborator"
+        selectedProfile.full_name ||
+        selectedProfile.email ||
+        "this collaborator"
       } to this workspace?`,
     );
 
@@ -529,6 +686,11 @@ export default function WorkspaceClient() {
       setAddingMember(false);
       return;
     }
+    await addUserToWorkspaceGroupConversation(
+  selectedWorkspaceId,
+  memberIdToAdd,
+  "member",
+);
 
     setSelectedCollaboratorId("");
     await loadWorkspaceDetails(selectedWorkspaceId);
@@ -561,6 +723,11 @@ export default function WorkspaceClient() {
       alert(error.message);
       return;
     }
+
+await removeUserFromWorkspaceGroupConversation(
+  selectedWorkspaceId,
+  member.user_id,
+);
 
     await loadWorkspaceDetails(selectedWorkspaceId);
   };
@@ -750,65 +917,66 @@ export default function WorkspaceClient() {
     }
   };
 
- const handleCreateMeeting = async () => {
-  if (!selectedWorkspaceId) {
-    alert("Select a workspace first.");
-    return;
-  }
-
-  if (!userId) {
-    alert("You must be logged in.");
-    return;
-  }
-
-  if (!meetingTitle.trim()) {
-    alert("Add a meeting title.");
-    return;
-  }
-
-  setSavingMeeting(true);
-
-  try {
-    const roomName = `researchgram-${selectedWorkspaceId}-${Date.now()}`.replace(
-      /[^a-zA-Z0-9]/g,
-      "",
-    );
-
-    const meetingUrl = `https://meet.jit.si/${roomName}`;
-
-    const { data: createdMeeting, error } = await supabase
-      .from("workspace_meetings")
-      .insert({
-        workspace_id: selectedWorkspaceId,
-        created_by: userId,
-        title: meetingTitle.trim(),
-        provider: "jitsi",
-        room_name: roomName,
-        meeting_url: meetingUrl,
-        starts_at: meetingStart ? new Date(meetingStart).toISOString() : null,
-      })
-      .select("*")
-      .single();
-
-    if (error) {
-      console.log("CREATE MEETING ERROR:", error);
-      alert(error.message);
+  const handleCreateMeeting = async () => {
+    if (!selectedWorkspaceId) {
+      alert("Select a workspace first.");
       return;
     }
 
-    setMeetingTitle("");
-    setMeetingStart("");
+    if (!userId) {
+      alert("You must be logged in.");
+      return;
+    }
 
-    setMeetings((prev) => [createdMeeting as WorkspaceMeeting, ...prev]);
-    setActiveMeeting(createdMeeting as WorkspaceMeeting);
-    setActiveTab("meetings");
-  } catch (error) {
-    console.log("CREATE MEETING UNKNOWN ERROR:", error);
-    alert("Could not create meeting. Check browser console for details.");
-  } finally {
-    setSavingMeeting(false);
-  }
-};
+    if (!meetingTitle.trim()) {
+      alert("Add a meeting title.");
+      return;
+    }
+
+    setSavingMeeting(true);
+
+    try {
+      const roomName =
+        `researchgram-${selectedWorkspaceId}-${Date.now()}`.replace(
+          /[^a-zA-Z0-9]/g,
+          "",
+        );
+
+      const meetingUrl = `https://meet.jit.si/${roomName}`;
+
+      const { data: createdMeeting, error } = await supabase
+        .from("workspace_meetings")
+        .insert({
+          workspace_id: selectedWorkspaceId,
+          created_by: userId,
+          title: meetingTitle.trim(),
+          provider: "jitsi",
+          room_name: roomName,
+          meeting_url: meetingUrl,
+          starts_at: meetingStart ? new Date(meetingStart).toISOString() : null,
+        })
+        .select("*")
+        .single();
+
+      if (error) {
+        console.log("CREATE MEETING ERROR:", error);
+        alert(error.message);
+        return;
+      }
+
+      setMeetingTitle("");
+      setMeetingStart("");
+
+      setMeetings((prev) => [createdMeeting as WorkspaceMeeting, ...prev]);
+      setActiveMeeting(createdMeeting as WorkspaceMeeting);
+      setActiveTab("meetings");
+    } catch (error) {
+      console.log("CREATE MEETING UNKNOWN ERROR:", error);
+      alert("Could not create meeting. Check browser console for details.");
+    } finally {
+      setSavingMeeting(false);
+    }
+  };
 
   const handleAddUpdate = async () => {
     if (!selectedWorkspaceId) {

@@ -1,297 +1,466 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import MessagesUI, {
-  type Conversation,
+  type ConversationDivision,
   type ConversationView,
-  type ContentPost,
-  type Message,
-  type Profile,
+  type MessageRow,
+  type ProfileLite,
+  type TypingUser,
 } from "./UI";
 
-function getMessageTimeValue(message: Message) {
-  return message.created_at ? new Date(message.created_at).getTime() : 0;
-}
+type ConversationRow = {
+  id: string;
+  participant_one_id: string | null;
+  participant_two_id: string | null;
+  conversation_type: ConversationDivision;
+  title: string | null;
+  content_id: string | null;
+  request_id: string | null;
+  workspace_id: string | null;
+  created_by: string | null;
+  last_message_at: string | null;
+  created_at: string | null;
+};
 
-function dedupeMessages(messageList: Message[]) {
-  const map = new Map<string, Message>();
+type ConversationMemberRow = {
+  id: string;
+  conversation_id: string;
+  user_id: string;
+  role: string;
+  last_read_at: string | null;
+  muted: boolean | null;
+  joined_at: string | null;
+};
 
-  messageList.forEach((message) => {
-    map.set(message.id, message);
-  });
+type WorkspaceLite = {
+  id: string;
+  title: string | null;
+  workspace_type: string | null;
+};
 
-  return Array.from(map.values()).sort(
-    (a, b) => getMessageTimeValue(a) - getMessageTimeValue(b),
-  );
+type ContentLite = {
+  id: string;
+  title: string | null;
+};
+
+function getDisplayName(profile: ProfileLite | null | undefined) {
+  return profile?.full_name || profile?.email?.split("@")[0] || "Researcher";
 }
 
 export default function MessagesClient() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const requestedConversationId = searchParams.get("conversation");
 
   const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState("");
+  const [myProfile, setMyProfile] = useState<ProfileLite | null>(null);
+
+  const [activeDivision, setActiveDivision] =
+    useState<ConversationDivision>("direct");
+
+  const [conversations, setConversations] = useState<ConversationView[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState("");
+  const [messages, setMessages] = useState<MessageRow[]>([]);
+
+  const [messageText, setMessageText] = useState("");
   const [sending, setSending] = useState(false);
 
-  const [userId, setUserId] = useState("");
-  const [conversations, setConversations] = useState<ConversationView[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<
-    string | null
-  >(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [messageText, setMessageText] = useState("");
-  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  const [messageActionLoadingId, setMessageActionLoadingId] = useState<
-    string | null
-  >(null);
-  const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({});
-  const [typingChannelReady, setTypingChannelReady] = useState(false);
+  const [connectedProfiles, setConnectedProfiles] = useState<ProfileLite[]>([]);
+  const [selectedDirectUserId, setSelectedDirectUserId] = useState("");
+  const [creatingDirect, setCreatingDirect] = useState(false);
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
+
   const typingChannelRef = useRef<any>(null);
-  const typingSendThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const typingHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const typingTimeoutsRef = useRef<
+    Record<string, ReturnType<typeof setTimeout>>
+  >({});
+  const lastTypingSentRef = useRef(0);
+  const selectedConversationIdRef = useRef("");
 
   const selectedConversation = useMemo(
     () =>
-      conversations.find((item) => item.id === selectedConversationId) || null,
+      conversations.find(
+        (conversation) => conversation.id === selectedConversationId,
+      ) || null,
     [conversations, selectedConversationId],
   );
 
-  const latestOwnMessageId = useMemo(() => {
-    return (
-      [...messages]
-        .reverse()
-        .find(
-          (message) =>
-            message.sender_id === userId &&
-            !message.is_deleted &&
-            !message.id.startsWith("temp-"),
-        )?.id || null
-    );
-  }, [messages, userId]);
+  const filteredConversations = useMemo(
+    () =>
+      conversations.filter(
+        (conversation) => conversation.conversation_type === activeDivision,
+      ),
+    [conversations, activeDivision],
+  );
 
-  const loadConversations = async (currentUserId: string) => {
-    const { data: conversationData, error: conversationError } = await supabase
-      .from("conversations")
-      .select(
-        "id, request_id, content_id, participant_one_id, participant_two_id, created_at, updated_at",
-      )
-      .or(
-        `participant_one_id.eq.${currentUserId},participant_two_id.eq.${currentUserId}`,
-      )
-      .order("updated_at", { ascending: false });
+  const loadConnectedProfiles = useCallback(async (currentUserId: string) => {
+    const candidateIds = new Set<string>();
 
-    if (conversationError) {
-      console.log("FETCH CONVERSATIONS ERROR:", conversationError);
-      setConversations([]);
+    const addPair = (
+      firstUserId: string | null | undefined,
+      secondUserId: string | null | undefined,
+    ) => {
+      if (!firstUserId || !secondUserId) return;
+
+      const otherId =
+        firstUserId === currentUserId
+          ? secondUserId
+          : secondUserId === currentUserId
+            ? firstUserId
+            : null;
+
+      if (!otherId || otherId === currentUserId) return;
+
+      candidateIds.add(otherId);
+    };
+
+    const { data: connections } = await supabase
+      .from("user_connections")
+      .select("user_one_id, user_two_id")
+      .or(`user_one_id.eq.${currentUserId},user_two_id.eq.${currentUserId}`);
+
+    (connections || []).forEach((item: any) => {
+      addPair(item.user_one_id, item.user_two_id);
+    });
+
+    const { data: profileRequests } = await supabase
+      .from("profile_requests")
+      .select("requester_id, receiver_id, status")
+      .eq("status", "accepted")
+      .or(`requester_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`);
+
+    (profileRequests || []).forEach((item: any) => {
+      addPair(item.requester_id, item.receiver_id);
+    });
+
+    const { data: researchRequests } = await supabase
+      .from("research_requests")
+      .select("requester_id, receiver_id, status")
+      .eq("status", "accepted")
+      .or(`requester_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`);
+
+    (researchRequests || []).forEach((item: any) => {
+      addPair(item.requester_id, item.receiver_id);
+    });
+
+    const ids = Array.from(candidateIds);
+
+    if (ids.length === 0) {
+      setConnectedProfiles([]);
       return;
     }
 
-    const rawConversations = (conversationData || []) as Conversation[];
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, full_name, email, department, profile_pic_url")
+      .in("id", ids);
 
-    if (rawConversations.length === 0) {
-      setConversations([]);
+    if (error) {
+      console.log("LOAD CONNECTED PROFILES ERROR:", error);
+      setConnectedProfiles([]);
       return;
     }
 
-    const otherUserIds = Array.from(
-      new Set(
-        rawConversations.map((conversation) =>
-          conversation.participant_one_id === currentUserId
-            ? conversation.participant_two_id
-            : conversation.participant_one_id,
+    setConnectedProfiles((data || []) as ProfileLite[]);
+  }, []);
+
+  const markConversationRead = useCallback(
+    async (conversationId: string, currentUserId: string) => {
+      if (!conversationId || !currentUserId) return;
+
+      const now = new Date().toISOString();
+
+      await supabase
+        .from("conversation_members")
+        .update({
+          last_read_at: now,
+        })
+        .eq("conversation_id", conversationId)
+        .eq("user_id", currentUserId);
+
+      await supabase
+        .from("messages")
+        .update({
+          read_at: now,
+        })
+        .eq("conversation_id", conversationId)
+        .neq("sender_id", currentUserId)
+        .is("read_at", null);
+    },
+    [],
+  );
+
+  const loadConversations = useCallback(
+    async (currentUserId: string, keepSelected = true) => {
+      if (!currentUserId) return;
+
+      const { data: memberRows, error: memberError } = await supabase
+        .from("conversation_members")
+        .select(
+          "id, conversation_id, user_id, role, last_read_at, muted, joined_at",
+        )
+        .eq("user_id", currentUserId);
+
+      if (memberError) {
+        console.log("LOAD MY CONVERSATION MEMBERS ERROR:", memberError);
+        alert(memberError.message);
+        setConversations([]);
+        return;
+      }
+
+      const myMemberships = (memberRows || []) as ConversationMemberRow[];
+      const conversationIds = myMemberships.map((item) => item.conversation_id);
+
+      if (conversationIds.length === 0) {
+        setConversations([]);
+        setSelectedConversationId("");
+        return;
+      }
+
+      const { data: conversationRows, error: conversationError } =
+        await supabase
+          .from("conversations")
+          .select(
+            "id, participant_one_id, participant_two_id, conversation_type, title, content_id, request_id, workspace_id, created_by, last_message_at, created_at",
+          )
+          .in("id", conversationIds)
+          .order("last_message_at", { ascending: false });
+
+      if (conversationError) {
+        console.log("LOAD CONVERSATIONS ERROR:", conversationError);
+        alert(conversationError.message);
+        return;
+      }
+
+      const safeConversations = (conversationRows || []) as ConversationRow[];
+
+      const { data: allMemberRows, error: allMemberError } = await supabase
+        .from("conversation_members")
+        .select(
+          "id, conversation_id, user_id, role, last_read_at, muted, joined_at",
+        )
+        .in("conversation_id", conversationIds);
+
+      if (allMemberError) {
+        console.log("LOAD ALL CONVERSATION MEMBERS ERROR:", allMemberError);
+      }
+
+      const allMembers = (allMemberRows || []) as ConversationMemberRow[];
+
+      const allProfileIds = Array.from(
+        new Set(allMembers.map((member) => member.user_id).filter(Boolean)),
+      );
+
+      const profileMap: Record<string, ProfileLite> = {};
+
+      if (allProfileIds.length > 0) {
+        const { data: profiles, error: profileError } = await supabase
+          .from("profiles")
+          .select("id, full_name, email, department, profile_pic_url")
+          .in("id", allProfileIds);
+
+        if (profileError) {
+          console.log("LOAD MESSAGE PROFILES ERROR:", profileError);
+        }
+
+        (profiles || []).forEach((profile: any) => {
+          profileMap[profile.id] = profile as ProfileLite;
+        });
+      }
+
+      const workspaceIds = Array.from(
+        new Set(
+          safeConversations
+            .map((conversation) => conversation.workspace_id)
+            .filter(Boolean) as string[],
         ),
-      ),
-    );
+      );
 
-    const contentIds = Array.from(
-      new Set(
-        rawConversations
-          .map((conversation) => conversation.content_id)
-          .filter(Boolean),
-      ),
-    ) as string[];
+      const workspaceMap: Record<string, WorkspaceLite> = {};
 
-    const conversationIds = rawConversations.map(
-      (conversation) => conversation.id,
-    );
+      if (workspaceIds.length > 0) {
+        const { data: workspaces } = await supabase
+          .from("workspaces")
+          .select("id, title, workspace_type")
+          .in("id", workspaceIds);
 
-    let profileMap: Record<string, Profile> = {};
-    let contentMap: Record<string, ContentPost> = {};
-    let lastMessageMap: Record<string, Message> = {};
-
-    if (otherUserIds.length > 0) {
-      const { data: profilesData, error: profilesError } = await supabase
-        .from("profiles")
-        .select("id, full_name, email, department, profile_pic_url")
-        .in("id", otherUserIds);
-
-      if (profilesError) {
-        console.log("FETCH MESSAGE PROFILES ERROR:", profilesError);
+        (workspaces || []).forEach((workspace: any) => {
+          workspaceMap[workspace.id] = workspace as WorkspaceLite;
+        });
       }
 
-      profileMap = (profilesData || []).reduce(
-        (acc, profile) => {
-          acc[profile.id] = profile as Profile;
-          return acc;
-        },
-        {} as Record<string, Profile>,
+      const contentIds = Array.from(
+        new Set(
+          safeConversations
+            .map((conversation) => conversation.content_id)
+            .filter(Boolean) as string[],
+        ),
       );
-    }
 
-    if (contentIds.length > 0) {
-      const { data: contentsData, error: contentsError } = await supabase
-        .from("contents")
-        .select("id, title, post_type")
-        .in("id", contentIds);
+      const contentMap: Record<string, ContentLite> = {};
 
-      if (contentsError) {
-        console.log("FETCH MESSAGE POSTS ERROR:", contentsError);
+      if (contentIds.length > 0) {
+        const { data: contents } = await supabase
+          .from("contents")
+          .select("id, title")
+          .in("id", contentIds);
+
+        (contents || []).forEach((content: any) => {
+          contentMap[content.id] = content as ContentLite;
+        });
       }
 
-      contentMap = (contentsData || []).reduce(
-        (acc, post) => {
-          acc[post.id] = post as ContentPost;
-          return acc;
-        },
-        {} as Record<string, ContentPost>,
-      );
-    }
-
-    if (conversationIds.length > 0) {
-      const { data: messagesData, error: messagesError } = await supabase
+      const { data: recentMessages, error: recentMessageError } = await supabase
         .from("messages")
         .select(
-          "id, conversation_id, sender_id, message_text, created_at, read_at, is_deleted",
+          "id, conversation_id, sender_id, body, read_at, is_deleted, created_at",
         )
         .in("conversation_id", conversationIds)
-        .order("created_at", { ascending: false });
+        .eq("is_deleted", false)
+        .order("created_at", { ascending: false })
+        .limit(500);
 
-      if (messagesError) {
-        console.log("FETCH LAST MESSAGES ERROR:", messagesError);
+      if (recentMessageError) {
+        console.log("LOAD RECENT MESSAGES ERROR:", recentMessageError);
       }
 
-      (messagesData || []).forEach((message) => {
+      const recent = ((recentMessages || []) as MessageRow[]).filter(
+        (message) => !message.is_deleted,
+      );
+
+      const lastMessageMap: Record<string, MessageRow> = {};
+      const unreadMap: Record<string, number> = {};
+
+      const membershipMap: Record<string, ConversationMemberRow> = {};
+
+      myMemberships.forEach((membership) => {
+        membershipMap[membership.conversation_id] = membership;
+      });
+
+      recent.forEach((message) => {
         if (!lastMessageMap[message.conversation_id]) {
-          lastMessageMap[message.conversation_id] = message as Message;
+          lastMessageMap[message.conversation_id] = message;
+        }
+
+        const membership = membershipMap[message.conversation_id];
+        const lastReadTime = membership?.last_read_at
+          ? new Date(membership.last_read_at).getTime()
+          : 0;
+
+        const messageTime = message.created_at
+          ? new Date(message.created_at).getTime()
+          : 0;
+
+        if (message.sender_id !== currentUserId && messageTime > lastReadTime) {
+          unreadMap[message.conversation_id] =
+            (unreadMap[message.conversation_id] || 0) + 1;
         }
       });
-    }
 
-    let unreadCountMap: Record<string, number> = {};
+      const normalized: ConversationView[] = safeConversations.map(
+        (conversation) => {
+          const members = allMembers
+            .filter((member) => member.conversation_id === conversation.id)
+            .map((member) => ({
+              ...member,
+              profile: profileMap[member.user_id] || null,
+            }));
 
-    if (conversationIds.length > 0) {
-      const { data: unreadData, error: unreadError } = await supabase
-        .from("messages")
-        .select("conversation_id")
-        .in("conversation_id", conversationIds)
-        .neq("sender_id", currentUserId)
-        .is("read_at", null)
-        .eq("is_deleted", false);
+          const otherMember = members.find(
+            (member) => member.user_id !== currentUserId,
+          );
 
-      if (unreadError) {
-        console.log("FETCH UNREAD MESSAGES ERROR:", unreadError);
+          const workspace = conversation.workspace_id
+            ? workspaceMap[conversation.workspace_id] || null
+            : null;
+
+          const content = conversation.content_id
+            ? contentMap[conversation.content_id] || null
+            : null;
+
+          let displayTitle = conversation.title || "Conversation";
+
+          if (conversation.conversation_type === "direct") {
+            displayTitle = getDisplayName(otherMember?.profile);
+          }
+
+          if (conversation.conversation_type === "workspace_group") {
+            displayTitle =
+              workspace?.title || conversation.title || "Workspace group";
+          }
+
+          if (conversation.conversation_type === "collaboration") {
+            displayTitle =
+              content?.title || conversation.title || "Research collaboration";
+          }
+
+          return {
+            ...conversation,
+            display_title: displayTitle,
+            members,
+            workspace,
+            content,
+            last_message: lastMessageMap[conversation.id] || null,
+            unread_count: unreadMap[conversation.id] || 0,
+          };
+        },
+      );
+
+      setConversations(normalized);
+
+      const currentSelectedStillExists =
+        selectedConversationId &&
+        normalized.some(
+          (conversation) => conversation.id === selectedConversationId,
+        );
+
+      if (keepSelected && currentSelectedStillExists) {
+        return;
       }
 
-      (unreadData || []).forEach((message: any) => {
-        unreadCountMap[message.conversation_id] =
-          (unreadCountMap[message.conversation_id] || 0) + 1;
-      });
-    }
+      const next =
+        normalized.find(
+          (conversation) => conversation.conversation_type === activeDivision,
+        ) || normalized[0];
 
-    const normalized: ConversationView[] = rawConversations.map(
-      (conversation) => {
-        const otherUserId =
-          conversation.participant_one_id === currentUserId
-            ? conversation.participant_two_id
-            : conversation.participant_one_id;
+      setSelectedConversationId(next?.id || "");
+    },
+    [activeDivision, selectedConversationId],
+  );
 
-        return {
-          ...conversation,
-          otherProfile: profileMap[otherUserId] || null,
-          contentPost: conversation.content_id
-            ? contentMap[conversation.content_id] || null
-            : null,
-          lastMessage: lastMessageMap[conversation.id] || null,
-          unread_count: unreadCountMap[conversation.id] || 0,
-        };
-      },
-    );
+  const loadMessages = useCallback(
+    async (conversationId: string, currentUserId: string) => {
+      if (!conversationId || !currentUserId) {
+        setMessages([]);
+        return;
+      }
 
-    setConversations(normalized);
+      const { data, error } = await supabase
+        .from("messages")
+        .select(
+          "id, conversation_id, sender_id, body, read_at, is_deleted, created_at",
+        )
+        .eq("conversation_id", conversationId)
+        .eq("is_deleted", false)
+        .order("created_at", { ascending: true })
+        .limit(200);
 
-    if (
-      requestedConversationId &&
-      normalized.some(
-        (conversation) => conversation.id === requestedConversationId,
-      )
-    ) {
-      setSelectedConversationId(requestedConversationId);
-      return;
-    }
+      if (error) {
+        console.log("LOAD MESSAGES ERROR:", error);
+        alert(error.message);
+        setMessages([]);
+        return;
+      }
 
-    if (!selectedConversationId && normalized.length > 0) {
-      setSelectedConversationId(normalized[0].id);
-    }
-  };
-
-  const loadMessages = async (conversationId: string) => {
-    const { data, error } = await supabase
-      .from("messages")
-      .select(
-        "id, conversation_id, sender_id, message_text, created_at, updated_at, reply_to_message_id, is_deleted, deleted_at, pinned_at, pinned_by, read_at",
-      )
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.log("FETCH MESSAGES ERROR:", error);
-      setMessages([]);
-      return;
-    }
-
-    setMessages(dedupeMessages((data || []) as Message[]));
-  };
-
-  const markConversationAsRead = async (
-    conversationId: string,
-    currentUserId: string,
-  ) => {
-    const readTime = new Date().toISOString();
-
-    const { error } = await supabase
-      .from("messages")
-      .update({ read_at: readTime, updated_at: readTime })
-      .eq("conversation_id", conversationId)
-      .neq("sender_id", currentUserId)
-      .is("read_at", null);
-
-    if (error) {
-      console.log("MARK MESSAGES READ ERROR:", error);
-      return;
-    }
-
-    setMessages((prev) =>
-      dedupeMessages(
-        prev.map((message) =>
-          message.conversation_id === conversationId &&
-          message.sender_id !== currentUserId &&
-          !message.read_at
-            ? { ...message, read_at: readTime, updated_at: readTime }
-            : message,
-        ),
-      ),
-    );
-
-    await loadConversations(currentUserId);
-  };
+      setMessages((data || []) as MessageRow[]);
+      await markConversationRead(conversationId, currentUserId);
+      await loadConversations(currentUserId, true);
+    },
+    [loadConversations, markConversationRead],
+  );
 
   useEffect(() => {
     const load = async () => {
@@ -303,378 +472,380 @@ export default function MessagesClient() {
       }
 
       setUserId(authData.user.id);
-      await loadConversations(authData.user.id);
+
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("id, full_name, email, department, profile_pic_url")
+        .eq("id", authData.user.id)
+        .maybeSingle();
+
+      setMyProfile((profileData as ProfileLite) || null);
+
+      await loadConnectedProfiles(authData.user.id);
+      await loadConversations(authData.user.id, false);
+
       setLoading(false);
     };
 
     load();
-  }, [router]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, selectedConversationId]);
-
-  useEffect(() => {
-    const loadSelectedConversation = async () => {
-      if (!selectedConversationId || !userId) return;
-
-      await loadMessages(selectedConversationId);
-      await markConversationAsRead(selectedConversationId, userId);
-    };
-
-    loadSelectedConversation();
-  }, [selectedConversationId, userId]);
-
-  useEffect(() => {
-    if (!userId) return;
-
-    const channel = supabase
-      .channel(`researchgram-messages-${userId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "messages",
-        },
-        async (payload) => {
-          const newMessage = payload.new as Message;
-
-          console.log("REALTIME MESSAGE INSERT:", newMessage);
-
-          await loadConversations(userId);
-
-          if (newMessage.conversation_id === selectedConversationId) {
-            setMessages((prev) => {
-              const withoutDuplicate = prev.filter(
-                (message) => message.id !== newMessage.id,
-              );
-
-              return dedupeMessages([...withoutDuplicate, newMessage]);
-            });
-
-            if (newMessage.sender_id !== userId) {
-              await markConversationAsRead(newMessage.conversation_id, userId);
-            }
-          }
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "messages",
-        },
-        async (payload) => {
-          const updatedMessage = payload.new as Message;
-
-          console.log("REALTIME MESSAGE UPDATE:", updatedMessage);
-
-          await loadConversations(userId);
-
-          if (updatedMessage.conversation_id === selectedConversationId) {
-            setMessages((prev) =>
-              dedupeMessages(
-                prev.map((message) =>
-                  message.id === updatedMessage.id ? updatedMessage : message,
-                ),
-              ),
-            );
-          }
-        },
-      )
-      .subscribe((status) => {
-        console.log("MESSAGES REALTIME STATUS:", status);
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [userId, selectedConversationId]);
+  }, [router, loadConnectedProfiles, loadConversations]);
 
   useEffect(() => {
     if (!selectedConversationId || !userId) return;
 
-    setTypingUsers({});
-    setTypingChannelReady(false);
+    loadMessages(selectedConversationId, userId);
+  }, [selectedConversationId, userId, loadMessages]);
+
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const refreshMessages = async (conversationId: string) => {
+      if (!conversationId) return;
+      await loadMessages(conversationId, userId);
+    };
+
+    const refreshConversations = async () => {
+      await loadConversations(userId, true);
+    };
 
     const channel = supabase
-      .channel(`typing-${selectedConversationId}`, {
-        config: {
-          broadcast: {
-            self: false,
-          },
+      .channel(`messages-db-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "messages",
         },
-      })
+        async (payload) => {
+          const changedRow = (payload.new || payload.old) as any;
+          const currentConversationId = selectedConversationIdRef.current;
+
+          if (
+            changedRow?.conversation_id &&
+            changedRow.conversation_id === currentConversationId
+          ) {
+            await refreshMessages(currentConversationId);
+          } else {
+            await refreshConversations();
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "conversations",
+        },
+        async () => {
+          await refreshConversations();
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "conversation_members",
+        },
+        async () => {
+          await refreshConversations();
+        },
+      )
+      .subscribe();
+
+    const focusHandler = () => {
+      const currentConversationId = selectedConversationIdRef.current;
+
+      refreshConversations();
+
+      if (currentConversationId) {
+        refreshMessages(currentConversationId);
+      }
+    };
+
+    window.addEventListener("focus", focusHandler);
+
+    const intervalId = window.setInterval(() => {
+      const currentConversationId = selectedConversationIdRef.current;
+
+      refreshConversations();
+
+      if (currentConversationId) {
+        refreshMessages(currentConversationId);
+      }
+    }, 5000);
+
+    return () => {
+      window.removeEventListener("focus", focusHandler);
+      window.clearInterval(intervalId);
+      supabase.removeChannel(channel);
+    };
+  }, [userId, loadMessages, loadConversations]);
+
+  useEffect(() => {
+    if (!selectedConversationId || !userId) return;
+
+    setTypingUsers([]);
+
+    if (typingChannelRef.current) {
+      supabase.removeChannel(typingChannelRef.current);
+    }
+
+    const channel = supabase
+      .channel(`typing-${selectedConversationId}`)
       .on("broadcast", { event: "typing" }, ({ payload }) => {
-        console.log("TYPING EVENT RECEIVED:", payload);
+        if (!payload || payload.user_id === userId) return;
+        if (payload.conversation_id !== selectedConversationId) return;
 
-        if (!payload?.user_id || payload.user_id === userId) return;
+        const typingUser: TypingUser = {
+          user_id: payload.user_id,
+          name: payload.name || "Someone",
+        };
 
-        setTypingUsers((prev) => ({
-          ...prev,
-          [payload.user_id]: true,
-        }));
+        setTypingUsers((prev) => {
+          const withoutSame = prev.filter(
+            (item) => item.user_id !== typingUser.user_id,
+          );
 
-        if (typingHideTimeoutRef.current) {
-          clearTimeout(typingHideTimeoutRef.current);
+          return [...withoutSame, typingUser];
+        });
+
+        if (typingTimeoutsRef.current[typingUser.user_id]) {
+          clearTimeout(typingTimeoutsRef.current[typingUser.user_id]);
         }
 
-        typingHideTimeoutRef.current = setTimeout(() => {
-          setTypingUsers((prev) => ({
-            ...prev,
-            [payload.user_id]: false,
-          }));
-        }, 1800);
+        typingTimeoutsRef.current[typingUser.user_id] = setTimeout(() => {
+          setTypingUsers((prev) =>
+            prev.filter((item) => item.user_id !== typingUser.user_id),
+          );
+        }, 2200);
       })
-      .subscribe((status) => {
-        console.log("TYPING CHANNEL STATUS:", status);
-
-        if (status === "SUBSCRIBED") {
-          setTypingChannelReady(true);
-        }
-      });
+      .subscribe();
 
     typingChannelRef.current = channel;
 
     return () => {
-      if (typingSendThrottleRef.current) {
-        clearTimeout(typingSendThrottleRef.current);
-        typingSendThrottleRef.current = null;
-      }
-
-      if (typingHideTimeoutRef.current) {
-        clearTimeout(typingHideTimeoutRef.current);
-        typingHideTimeoutRef.current = null;
-      }
-
-      setTypingUsers({});
-      setTypingChannelReady(false);
-      typingChannelRef.current = null;
-
+      Object.values(typingTimeoutsRef.current).forEach((timeout) =>
+        clearTimeout(timeout),
+      );
+      typingTimeoutsRef.current = {};
       supabase.removeChannel(channel);
     };
   }, [selectedConversationId, userId]);
 
-  const sendTypingSignal = async () => {
-    if (!typingChannelRef.current) return;
-    if (!typingChannelReady) return;
-    if (!userId || !selectedConversationId) return;
+  const sendTypingSignal = () => {
+    if (!typingChannelRef.current || !selectedConversationId || !userId) return;
 
-    if (typingSendThrottleRef.current) return;
+    const now = Date.now();
 
-    console.log("SENDING TYPING SIGNAL");
+    if (now - lastTypingSentRef.current < 900) return;
 
-    const response = await typingChannelRef.current.send({
+    lastTypingSentRef.current = now;
+
+    typingChannelRef.current.send({
       type: "broadcast",
       event: "typing",
       payload: {
-        user_id: userId,
         conversation_id: selectedConversationId,
-        at: new Date().toISOString(),
+        user_id: userId,
+        name: getDisplayName(myProfile),
       },
     });
+  };
 
-    console.log("TYPING SEND RESPONSE:", response);
+  const handleChangeMessageText = (value: string) => {
+    setMessageText(value);
+    sendTypingSignal();
+  };
 
-    typingSendThrottleRef.current = setTimeout(() => {
-      typingSendThrottleRef.current = null;
-    }, 1000);
+  const handleSelectConversation = async (conversationId: string) => {
+    setSelectedConversationId(conversationId);
+    setTypingUsers([]);
   };
 
   const handleSendMessage = async () => {
-    const cleanMessage = messageText.trim();
+    if (!selectedConversationId || !userId) {
+      alert("Select a conversation first.");
+      return;
+    }
 
-    if (!cleanMessage) return;
-    if (!selectedConversationId || !userId) return;
+    const body = messageText.trim();
 
-    setSending(true);
+    if (!body) return;
 
-    const tempId = `temp-${Date.now()}`;
-
-    const optimisticMessage: Message = {
-      id: tempId,
+    const tempMessage: MessageRow = {
+      id: `temp-${Date.now()}`,
       conversation_id: selectedConversationId,
       sender_id: userId,
-      message_text: cleanMessage,
-      created_at: new Date().toISOString(),
-      reply_to_message_id: replyingTo?.id || null,
-      is_deleted: false,
-      deleted_at: null,
-      pinned_at: null,
-      pinned_by: null,
+      body,
       read_at: null,
+      is_deleted: false,
+      created_at: new Date().toISOString(),
     };
 
-    setMessages((prev) => dedupeMessages([...prev, optimisticMessage]));
+    setMessages((prev) => [...prev, tempMessage]);
     setMessageText("");
-    setReplyingTo(null);
+    setSending(true);
 
-    const { data, error } = await supabase
-      .from("messages")
-      .insert({
+    try {
+      const { error } = await supabase.from("messages").insert({
         conversation_id: selectedConversationId,
         sender_id: userId,
-        message_text: cleanMessage,
-        reply_to_message_id: optimisticMessage.reply_to_message_id,
-      })
-      .select(
-        "id, conversation_id, sender_id, message_text, created_at, updated_at, reply_to_message_id, is_deleted, deleted_at, pinned_at, pinned_by, read_at",
-      )
-      .single();
-
-    if (error) {
-      console.log("SEND MESSAGE ERROR:", error);
-      alert(error.message);
-
-      setMessages((prev) => prev.filter((message) => message.id !== tempId));
-      setSending(false);
-      return;
-    }
-
-    setMessages((prev) =>
-      dedupeMessages(
-        prev.map((message) =>
-          message.id === tempId ? (data as Message) : message,
-        ),
-      ),
-    );
-
-    await supabase
-      .from("conversations")
-      .update({ updated_at: new Date().toISOString() })
-      .eq("id", selectedConversationId);
-
-    await loadConversations(userId);
-    setSending(false);
-  };
-
-  const handleDeleteMessage = async (message: Message) => {
-    if (!userId) return;
-
-    if (message.sender_id !== userId) {
-      alert("You can delete only your own messages.");
-      return;
-    }
-
-    const confirmDelete = confirm("Delete this message?");
-    if (!confirmDelete) return;
-
-    setMessageActionLoadingId(message.id);
-
-    const { error } = await supabase
-      .from("messages")
-      .update({
-        is_deleted: true,
-        deleted_at: new Date().toISOString(),
-        message_text: "This message was deleted",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", message.id)
-      .eq("sender_id", userId);
-
-    if (error) {
-      console.log("DELETE MESSAGE ERROR:", error);
-      alert(error.message);
-      setMessageActionLoadingId(null);
-      return;
-    }
-
-    setMessageActionLoadingId(null);
-  };
-
-  const handleTogglePinMessage = async (message: Message) => {
-    if (!userId || !selectedConversationId) return;
-
-    if (message.is_deleted) {
-      alert("Deleted messages cannot be pinned.");
-      return;
-    }
-
-    setMessageActionLoadingId(message.id);
-
-    if (message.pinned_at) {
-      const { error } = await supabase
-        .from("messages")
-        .update({
-          pinned_at: null,
-          pinned_by: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", message.id)
-        .eq("conversation_id", selectedConversationId);
+        body,
+        message_text: body,
+        is_deleted: false,
+      });
 
       if (error) {
-        console.log("UNPIN MESSAGE ERROR:", error);
+        console.log("SEND MESSAGE ERROR:", error);
         alert(error.message);
-        setMessageActionLoadingId(null);
+
+        setMessages((prev) =>
+          prev.filter((message) => message.id !== tempMessage.id),
+        );
+
+        setMessageText(body);
         return;
       }
 
-      setMessageActionLoadingId(null);
+      await supabase
+        .from("conversations")
+        .update({
+          last_message_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", selectedConversationId);
+
+      await loadMessages(selectedConversationId, userId);
+      await loadConversations(userId, true);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleCreateDirectChat = async () => {
+    if (!userId) return;
+
+    if (!selectedDirectUserId) {
+      alert("Select a connected researcher first.");
       return;
     }
 
-    const { error: clearError } = await supabase
-      .from("messages")
-      .update({
-        pinned_at: null,
-        pinned_by: null,
-        updated_at: new Date().toISOString(),
+    const existing = conversations.find(
+      (conversation) =>
+        conversation.conversation_type === "direct" &&
+        conversation.members.some(
+          (member) => member.user_id === selectedDirectUserId,
+        ),
+    );
+
+    if (existing) {
+      setActiveDivision("direct");
+      setSelectedConversationId(existing.id);
+      setSelectedDirectUserId("");
+      return;
+    }
+
+    setCreatingDirect(true);
+
+    const otherProfile = connectedProfiles.find(
+      (profile) => profile.id === selectedDirectUserId,
+    );
+
+    const { data: conversation, error } = await supabase
+      .from("conversations")
+      .insert({
+        participant_one_id: userId,
+        participant_two_id: selectedDirectUserId,
+        conversation_type: "direct",
+        title: getProfileNameForTitle(otherProfile),
+        created_by: userId,
+        last_message_at: new Date().toISOString(),
       })
-      .eq("conversation_id", selectedConversationId)
-      .not("pinned_at", "is", null);
+      .select("id")
+      .single();
 
-    if (clearError) {
-      console.log("CLEAR PINNED MESSAGE ERROR:", clearError);
-      alert(clearError.message);
-      setMessageActionLoadingId(null);
+    if (error || !conversation) {
+      console.log("CREATE DIRECT CONVERSATION ERROR:", error);
+      alert(error?.message || "Could not create direct chat.");
+      setCreatingDirect(false);
       return;
     }
 
-    const { error } = await supabase
-      .from("messages")
-      .update({
-        pinned_at: new Date().toISOString(),
-        pinned_by: userId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", message.id)
-      .eq("conversation_id", selectedConversationId);
+    const { error: memberError } = await supabase
+      .from("conversation_members")
+      .insert([
+        {
+          conversation_id: conversation.id,
+          user_id: userId,
+          role: "member",
+          last_read_at: new Date().toISOString(),
+        },
+        {
+          conversation_id: conversation.id,
+          user_id: selectedDirectUserId,
+          role: "member",
+          last_read_at: new Date().toISOString(),
+        },
+      ]);
 
-    if (error) {
-      console.log("PIN MESSAGE ERROR:", error);
-      alert(error.message);
-      setMessageActionLoadingId(null);
+    if (memberError) {
+      console.log("CREATE DIRECT MEMBERS ERROR:", memberError);
+      alert(memberError.message);
+      setCreatingDirect(false);
       return;
     }
 
-    setMessageActionLoadingId(null);
+    setSelectedDirectUserId("");
+    setActiveDivision("direct");
+    setSelectedConversationId(conversation.id);
+
+    await loadConversations(userId, true);
+    setCreatingDirect(false);
+  };
+
+  const handleOpenWorkspace = (workspaceId: string) => {
+    router.push(`/workspace?workspaceId=${workspaceId}`);
+  };
+
+  const handleOpenPost = (contentId: string) => {
+    router.push(`/feed?post=${contentId}`);
   };
 
   return (
     <MessagesUI
       loading={loading}
-      sending={sending}
       userId={userId}
+      activeDivision={activeDivision}
+      setActiveDivision={setActiveDivision}
       conversations={conversations}
+      filteredConversations={filteredConversations}
       selectedConversationId={selectedConversationId}
       selectedConversation={selectedConversation}
       messages={messages}
       messageText={messageText}
-      replyingTo={replyingTo}
-      messageActionLoadingId={messageActionLoadingId}
+      sending={sending}
+      connectedProfiles={connectedProfiles}
+      selectedDirectUserId={selectedDirectUserId}
+      creatingDirect={creatingDirect}
       typingUsers={typingUsers}
-      latestOwnMessageId={latestOwnMessageId}
-      messagesEndRef={messagesEndRef}
-      setSelectedConversationId={setSelectedConversationId}
-      setMessageText={setMessageText}
-      setReplyingTo={setReplyingTo}
-      sendTypingSignal={sendTypingSignal}
+      setSelectedDirectUserId={setSelectedDirectUserId}
+      handleCreateDirectChat={handleCreateDirectChat}
+      handleSelectConversation={handleSelectConversation}
+      handleChangeMessageText={handleChangeMessageText}
       handleSendMessage={handleSendMessage}
-      handleDeleteMessage={handleDeleteMessage}
-      handleTogglePinMessage={handleTogglePinMessage}
+      handleOpenWorkspace={handleOpenWorkspace}
+      handleOpenPost={handleOpenPost}
     />
   );
+}
+
+function getProfileNameForTitle(profile: ProfileLite | undefined) {
+  return profile?.full_name || profile?.email || "Direct chat";
 }

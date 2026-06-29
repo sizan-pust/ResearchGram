@@ -1,9 +1,13 @@
 "use client";
 
-import type { RefObject } from "react";
 import AppNav from "@/components/AppNav";
 
-export type Profile = {
+export type ConversationDivision =
+  | "direct"
+  | "collaboration"
+  | "workspace_group";
+
+export type ProfileLite = {
   id: string;
   full_name: string | null;
   email: string | null;
@@ -11,531 +15,565 @@ export type Profile = {
   profile_pic_url: string | null;
 };
 
-export type Conversation = {
+export type ConversationMemberView = {
   id: string;
-  request_id: string | null;
-  content_id: string | null;
-  participant_one_id: string;
-  participant_two_id: string;
-  created_at: string | null;
-  updated_at: string | null;
+  conversation_id: string;
+  user_id: string;
+  role: string;
+  last_read_at: string | null;
+  muted: boolean | null;
+  joined_at: string | null;
+  profile: ProfileLite | null;
 };
 
-export type Message = {
+export type MessageRow = {
   id: string;
   conversation_id: string;
   sender_id: string;
-  message_text: string;
+  body: string | null;
+  read_at: string | null;
+  is_deleted: boolean | null;
   created_at: string | null;
-  updated_at?: string | null;
-  reply_to_message_id?: string | null;
-  is_deleted?: boolean;
-  deleted_at?: string | null;
-  pinned_at?: string | null;
-  pinned_by?: string | null;
-  read_at?: string | null;
 };
 
-export type ContentPost = {
+export type ConversationView = {
   id: string;
+  participant_one_id: string | null;
+  participant_two_id: string | null;
+  conversation_type: ConversationDivision;
   title: string | null;
-  post_type: string | null;
+  content_id: string | null;
+  request_id: string | null;
+  workspace_id: string | null;
+  created_by: string | null;
+  last_message_at: string | null;
+  created_at: string | null;
+  display_title: string;
+  members: ConversationMemberView[];
+  workspace: {
+    id: string;
+    title: string | null;
+    workspace_type: string | null;
+  } | null;
+  content: {
+    id: string;
+    title: string | null;
+  } | null;
+  last_message: MessageRow | null;
+  unread_count: number;
 };
 
-export type ConversationView = Conversation & {
-  otherProfile: Profile | null;
-  contentPost: ContentPost | null;
-  lastMessage: Message | null;
-  unread_count: number;
+export type TypingUser = {
+  user_id: string;
+  name: string;
 };
 
 type MessagesUIProps = {
   loading: boolean;
-  sending: boolean;
-
   userId: string;
+
+  activeDivision: ConversationDivision;
+  setActiveDivision: (division: ConversationDivision) => void;
+
   conversations: ConversationView[];
-  selectedConversationId: string | null;
+  filteredConversations: ConversationView[];
+  selectedConversationId: string;
   selectedConversation: ConversationView | null;
 
-  messages: Message[];
+  messages: MessageRow[];
   messageText: string;
-  replyingTo: Message | null;
-  messageActionLoadingId: string | null;
-  typingUsers: Record<string, boolean>;
-  latestOwnMessageId: string | null;
-  messagesEndRef: RefObject<HTMLDivElement | null>;
+  sending: boolean;
 
-  setSelectedConversationId: (conversationId: string) => void;
-  setMessageText: (value: string) => void;
-  setReplyingTo: (message: Message | null) => void;
+  connectedProfiles: ProfileLite[];
+  selectedDirectUserId: string;
+  creatingDirect: boolean;
 
-  sendTypingSignal: () => void;
+  typingUsers: TypingUser[];
+
+  setSelectedDirectUserId: (value: string) => void;
+  handleCreateDirectChat: () => void;
+  handleSelectConversation: (conversationId: string) => void;
+  handleChangeMessageText: (value: string) => void;
   handleSendMessage: () => void;
-  handleDeleteMessage: (message: Message) => void;
-  handleTogglePinMessage: (message: Message) => void;
+  handleOpenWorkspace: (workspaceId: string) => void;
+  handleOpenPost: (contentId: string) => void;
 };
 
+const DIVISIONS: {
+  label: string;
+  value: ConversationDivision;
+  description: string;
+}[] = [
+  {
+    label: "Direct",
+    value: "direct",
+    description: "Personal chat with connected researchers",
+  },
+  {
+    label: "Collaborations",
+    value: "collaboration",
+    description: "Research-request based collaboration chats",
+  },
+  {
+    label: "Workspaces",
+    value: "workspace_group",
+    description: "Group chats for shared workspace members",
+  },
+];
+
 function formatTime(dateString: string | null) {
-  if (!dateString) return "Unknown time";
+  if (!dateString) return "";
 
   try {
     const date = new Date(dateString);
     const now = new Date();
 
-    const diffMs = now.getTime() - date.getTime();
-    const diffMinutes = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMinutes / 60);
-    const diffDays = Math.floor(diffHours / 24);
+    const sameDay = date.toDateString() === now.toDateString();
 
-    if (diffMinutes < 1) return "Just now";
-    if (diffMinutes < 60) return `${diffMinutes} min ago`;
-    if (diffHours < 24) return `${diffHours} hr ago`;
-    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+    if (sameDay) {
+      return new Intl.DateTimeFormat(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }).format(date);
+    }
 
     return new Intl.DateTimeFormat(undefined, {
       month: "short",
       day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
     }).format(date);
   } catch {
-    return "Unknown time";
+    return "";
   }
+}
+
+function getMemberName(member: ConversationMemberView | undefined | null) {
+  return (
+    member?.profile?.full_name ||
+    member?.profile?.email?.split("@")[0] ||
+    "Researcher"
+  );
+}
+
+function getSenderName(
+  senderId: string,
+  members: ConversationMemberView[],
+  currentUserId: string,
+) {
+  if (senderId === currentUserId) return "You";
+
+  const member = members.find((item) => item.user_id === senderId);
+
+  return getMemberName(member);
+}
+
+function getAvatarInitial(title: string) {
+  return title.charAt(0).toUpperCase();
+}
+
+function typeLabel(type: ConversationDivision) {
+  if (type === "direct") return "Direct";
+  if (type === "collaboration") return "Collaboration";
+  return "Workspace";
+}
+
+function typeStyle(type: ConversationDivision) {
+  if (type === "direct") return "bg-blue-50 text-blue-700";
+  if (type === "collaboration") return "bg-purple-50 text-purple-700";
+  return "bg-green-50 text-green-700";
+}
+
+function lastMessagePreview(conversation: ConversationView) {
+  const body = conversation.last_message?.body?.trim();
+
+  if (!body) {
+    if (conversation.conversation_type === "workspace_group") {
+      return "Workspace group chat is ready.";
+    }
+
+    if (conversation.conversation_type === "collaboration") {
+      return "Collaboration chat is ready.";
+    }
+
+    return "No messages yet.";
+  }
+
+  return body;
 }
 
 export default function MessagesUI({
   loading,
-  sending,
   userId,
+  activeDivision,
+  setActiveDivision,
   conversations,
+  filteredConversations,
   selectedConversationId,
   selectedConversation,
   messages,
   messageText,
-  replyingTo,
-  messageActionLoadingId,
+  sending,
+  connectedProfiles,
+  selectedDirectUserId,
+  creatingDirect,
   typingUsers,
-  latestOwnMessageId,
-  messagesEndRef,
-  setSelectedConversationId,
-  setMessageText,
-  setReplyingTo,
-  sendTypingSignal,
+  setSelectedDirectUserId,
+  handleCreateDirectChat,
+  handleSelectConversation,
+  handleChangeMessageText,
   handleSendMessage,
-  handleDeleteMessage,
-  handleTogglePinMessage,
+  handleOpenWorkspace,
+  handleOpenPost,
 }: MessagesUIProps) {
-  const pinnedMessage = messages.find(
-    (message) => message.pinned_at && !message.is_deleted,
-  );
+  const unreadDirect = conversations
+    .filter((item) => item.conversation_type === "direct")
+    .reduce((sum, item) => sum + item.unread_count, 0);
+
+  const unreadCollaboration = conversations
+    .filter((item) => item.conversation_type === "collaboration")
+    .reduce((sum, item) => sum + item.unread_count, 0);
+
+  const unreadWorkspace = conversations
+    .filter((item) => item.conversation_type === "workspace_group")
+    .reduce((sum, item) => sum + item.unread_count, 0);
+
+  const divisionUnreadMap: Record<ConversationDivision, number> = {
+    direct: unreadDirect,
+    collaboration: unreadCollaboration,
+    workspace_group: unreadWorkspace,
+  };
 
   if (loading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-50">
-        <p className="text-lg text-gray-600">Loading messages...</p>
+      <main className="min-h-screen bg-slate-50">
+        <AppNav activePage="messages" />
+        <div className="mx-auto max-w-7xl px-6 py-10 text-slate-600">
+          Loading messages...
+        </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-gray-100">
+    <main className="min-h-screen bg-slate-50">
       <AppNav activePage="messages" />
 
-      <section className="mx-auto grid max-w-7xl grid-cols-12 gap-6 px-4 py-6">
-        <aside className="col-span-12 rounded-3xl bg-white p-4 shadow-sm lg:col-span-4">
-          <div className="border-b border-gray-100 pb-4">
-            <h1 className="text-2xl font-bold text-gray-950">Messages</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              Direct conversations from accepted collaboration requests.
-            </p>
-          </div>
+      <section className="mx-auto max-w-7xl px-6 py-8">
+        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+          <h1 className="text-3xl font-black text-slate-950">Messages</h1>
 
-          <div className="mt-4 space-y-2">
-            {conversations.length === 0 ? (
-              <div className="py-12 text-center">
-                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-blue-50 text-2xl">
-                  💬
+          <p className="mt-2 text-sm leading-6 text-slate-500">
+            Manage personal chats, collaboration discussions, and workspace
+            group messages in one place.
+          </p>
+
+          <div className="mt-6 grid gap-3 md:grid-cols-3">
+            {DIVISIONS.map((division) => (
+              <button
+                key={division.value}
+                onClick={() => setActiveDivision(division.value)}
+                className={`rounded-2xl border p-4 text-left transition ${
+                  activeDivision === division.value
+                    ? "border-blue-300 bg-blue-50"
+                    : "border-slate-200 bg-slate-50 hover:bg-slate-100"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-black text-slate-950">{division.label}</p>
+
+                  {divisionUnreadMap[division.value] > 0 && (
+                    <span className="rounded-full bg-blue-600 px-2 py-1 text-xs font-bold text-white">
+                      {divisionUnreadMap[division.value]}
+                    </span>
+                  )}
                 </div>
 
-                <h2 className="font-bold text-gray-900">
-                  No conversations yet
-                </h2>
-
-                <p className="mt-2 text-sm text-gray-500">
-                  Accept collaboration requests or message your network
-                  connections to start a research conversation.
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {division.description}
                 </p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6 grid min-h-[680px] gap-6 lg:grid-cols-12">
+          <aside className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-4">
+            {activeDivision === "direct" && (
+              <div className="mb-4 rounded-2xl bg-slate-50 p-4">
+                <p className="font-black text-slate-950">Start Direct Chat</p>
+
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  You can start a personal chat with connected researchers or
+                  accepted collaborators.
+                </p>
+
+                <div className="mt-3 grid gap-2">
+                  <select
+                    value={selectedDirectUserId}
+                    onChange={(e) => setSelectedDirectUserId(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-400"
+                  >
+                    <option value="">-- Select researcher --</option>
+
+                    {connectedProfiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {profile.full_name ||
+                          profile.email ||
+                          "ResearchGram User"}
+                        {profile.department ? ` — ${profile.department}` : ""}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    onClick={handleCreateDirectChat}
+                    disabled={!selectedDirectUserId || creatingDirect}
+                    className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    {creatingDirect ? "Opening..." : "Open Direct Chat"}
+                  </button>
+                </div>
+
+                {connectedProfiles.length === 0 && (
+                  <p className="mt-3 text-xs font-semibold text-amber-700">
+                    No connected people found yet.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {filteredConversations.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
+                  <p className="text-sm text-slate-500">
+                    No conversations in this division yet.
+                  </p>
+                </div>
+              ) : (
+                filteredConversations.map((conversation) => (
+                  <button
+                    key={conversation.id}
+                    onClick={() => handleSelectConversation(conversation.id)}
+                    className={`w-full rounded-2xl border p-4 text-left transition ${
+                      selectedConversationId === conversation.id
+                        ? "border-blue-300 bg-blue-50"
+                        : "border-slate-100 bg-slate-50 hover:bg-slate-100"
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white text-lg font-black text-blue-700 shadow-sm">
+                        {getAvatarInitial(conversation.display_title)}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="line-clamp-1 font-black text-slate-950">
+                            {conversation.display_title}
+                          </p>
+
+                          {conversation.last_message_at && (
+                            <span className="shrink-0 text-[11px] font-semibold text-slate-400">
+                              {formatTime(conversation.last_message_at)}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${typeStyle(
+                              conversation.conversation_type,
+                            )}`}
+                          >
+                            {typeLabel(conversation.conversation_type)}
+                          </span>
+
+                          {conversation.unread_count > 0 && (
+                            <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                              {conversation.unread_count} new
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">
+                          {lastMessagePreview(conversation)}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </aside>
+
+          <section className="flex min-h-[680px] flex-col overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm lg:col-span-8">
+            {!selectedConversation ? (
+              <div className="flex flex-1 items-center justify-center p-10 text-center">
+                <div>
+                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-50 text-2xl">
+                    💬
+                  </div>
+
+                  <h2 className="text-2xl font-black text-slate-950">
+                    Select a conversation
+                  </h2>
+
+                  <p className="mt-2 text-sm text-slate-500">
+                    Choose a direct, collaboration, or workspace chat from the
+                    left side.
+                  </p>
+                </div>
               </div>
             ) : (
-              conversations.map((conversation) => (
-                <button
-                  key={conversation.id}
-                  onClick={() => setSelectedConversationId(conversation.id)}
-                  className={`w-full rounded-2xl p-3 text-left transition ${
-                    selectedConversationId === conversation.id
-                      ? "bg-blue-50"
-                      : "hover:bg-gray-50"
-                  }`}
-                >
-                  <div className="flex gap-3">
-                    <div className="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-indigo-100">
-                      {conversation.otherProfile?.profile_pic_url ? (
-                        <img
-                          src={conversation.otherProfile.profile_pic_url}
-                          alt={
-                            conversation.otherProfile.full_name ||
-                            "Profile photo"
-                          }
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-sm font-bold text-blue-700">
-                          {(conversation.otherProfile?.full_name || "R")
-                            .charAt(0)
-                            .toUpperCase()}
-                        </div>
-                      )}
-                    </div>
+              <>
+                <header className="border-b border-slate-100 p-5">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <div className="flex flex-wrap gap-2">
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-bold ${typeStyle(
+                            selectedConversation.conversation_type,
+                          )}`}
+                        >
+                          {typeLabel(selectedConversation.conversation_type)}
+                        </span>
 
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="truncate font-semibold text-gray-950">
-                          {conversation.otherProfile?.full_name ||
-                            "ResearchGram User"}
-                        </p>
-
-                        <span className="shrink-0 text-xs text-gray-400">
-                          {formatTime(
-                            conversation.lastMessage?.created_at ||
-                              conversation.updated_at,
-                          )}
+                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+                          {selectedConversation.members.length} member
+                          {selectedConversation.members.length === 1
+                            ? ""
+                            : "s"}
                         </span>
                       </div>
 
-                      <div className="mt-1 flex items-center justify-between gap-2">
-                        <p
-                          className={`truncate text-sm ${
-                            conversation.unread_count > 0
-                              ? "font-semibold text-gray-900"
-                              : "text-gray-500"
-                          }`}
+                      <h2 className="mt-3 text-2xl font-black text-slate-950">
+                        {selectedConversation.display_title}
+                      </h2>
+
+                      <p className="mt-1 text-sm text-slate-500">
+                        {selectedConversation.members
+                          .map((member) => getMemberName(member))
+                          .join(", ")}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {selectedConversation.content_id && (
+                        <button
+                          onClick={() =>
+                            handleOpenPost(selectedConversation.content_id!)
+                          }
+                          className="rounded-full bg-purple-50 px-4 py-2 text-sm font-bold text-purple-700 transition hover:bg-purple-100"
                         >
-                          {conversation.lastMessage?.is_deleted
-                            ? "This message was deleted"
-                            : conversation.lastMessage?.message_text ||
-                              conversation.contentPost?.title ||
-                              "Direct academic conversation"}
-                        </p>
+                          Open Post
+                        </button>
+                      )}
 
-                        {conversation.unread_count > 0 && (
-                          <span className="shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-xs font-bold text-white">
-                            {conversation.unread_count}
-                          </span>
-                        )}
-                      </div>
+                      {selectedConversation.workspace_id && (
+                        <button
+                          onClick={() =>
+                            handleOpenWorkspace(
+                              selectedConversation.workspace_id!,
+                            )
+                          }
+                          className="rounded-full bg-green-50 px-4 py-2 text-sm font-bold text-green-700 transition hover:bg-green-100"
+                        >
+                          Open Workspace
+                        </button>
+                      )}
                     </div>
                   </div>
-                </button>
-              ))
-            )}
-          </div>
-        </aside>
+                </header>
 
-        <section className="col-span-12 rounded-3xl bg-white shadow-sm lg:col-span-8">
-          {!selectedConversation ? (
-            <div className="flex min-h-[600px] items-center justify-center p-8 text-center">
-              <div>
-                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-50 text-2xl">
-                  🤝
-                </div>
-
-                <h2 className="text-xl font-bold text-gray-950">
-                  Select a conversation
-                </h2>
-
-                <p className="mt-2 text-sm text-gray-500">
-                  Choose an accepted collaboration conversation to start
-                  messaging.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex min-h-[600px] flex-col">
-              <div className="border-b border-gray-100 p-5">
-                <div className="flex items-center gap-3">
-                  <div className="h-12 w-12 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-indigo-100">
-                    {selectedConversation.otherProfile?.profile_pic_url ? (
-                      <img
-                        src={selectedConversation.otherProfile.profile_pic_url}
-                        alt={
-                          selectedConversation.otherProfile.full_name ||
-                          "Profile photo"
-                        }
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-sm font-bold text-blue-700">
-                        {(selectedConversation.otherProfile?.full_name || "R")
-                          .charAt(0)
-                          .toUpperCase()}
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <h2 className="font-bold text-gray-950">
-                      {selectedConversation.otherProfile?.full_name ||
-                        "ResearchGram User"}
-                    </h2>
-
-                    <p className="text-sm text-gray-500">
-                      {selectedConversation.otherProfile?.department ||
-                        "Research community"}
-                    </p>
-                  </div>
-                </div>
-
-                {selectedConversation.contentPost && (
-                  <>
-                    <div className="mt-4 rounded-2xl bg-gray-50 p-4">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        Collaboration topic
-                      </p>
-
-                      <p className="mt-1 font-semibold text-gray-950">
-                        {selectedConversation.contentPost.title ||
-                          "Untitled research post"}
-                      </p>
-
-                      <p className="mt-1 text-xs font-semibold capitalize text-blue-700">
-                        {(
-                          selectedConversation.contentPost.post_type ||
-                          "research_update"
-                        ).replaceAll("_", " ")}
+                <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50 p-5">
+                  {messages.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center">
+                      <p className="text-sm text-slate-500">
+                        No messages yet. Start the conversation.
                       </p>
                     </div>
+                  ) : (
+                    messages.map((message) => {
+                      const mine = message.sender_id === userId;
 
-                    {pinnedMessage && (
-                      <div className="mt-4 rounded-2xl border border-yellow-100 bg-yellow-50 p-4">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-yellow-700">
-                          Pinned message
-                        </p>
-
-                        <p className="mt-1 line-clamp-2 text-sm leading-6 text-yellow-900">
-                          {pinnedMessage.message_text}
-                        </p>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-
-              <div className="flex-1 space-y-3 overflow-y-auto overflow-x-hidden p-5">
-                {messages.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-center">
-                    <div>
-                      <p className="font-semibold text-gray-900">
-                        No messages yet
-                      </p>
-
-                      <p className="mt-1 text-sm text-gray-500">
-                        Start the conversation by sending a short research
-                        message.
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  messages.map((message) => {
-                    const isMine = message.sender_id === userId;
-                    const repliedMessage = message.reply_to_message_id
-                      ? messages.find(
-                          (item) => item.id === message.reply_to_message_id,
-                        )
-                      : null;
-
-                    return (
-                      <div
-                        key={message.id}
-                        className={`group flex ${
-                          isMine ? "justify-end" : "justify-start"
-                        }`}
-                      >
+                      return (
                         <div
-                          className={`flex min-w-0 max-w-[78%] flex-col ${
-                            isMine ? "items-end" : "items-start"
-                          }`}
+                          key={message.id}
+                          className={`flex ${mine ? "justify-end" : "justify-start"}`}
                         >
-                          {message.pinned_at && !message.is_deleted && (
-                            <span className="mb-1 text-xs font-semibold text-yellow-600">
-                              📌 Pinned
-                            </span>
-                          )}
-
                           <div
-                            className={`max-w-full overflow-hidden rounded-2xl px-4 py-3 ${
-                              message.is_deleted
-                                ? "bg-gray-100 text-gray-400 italic"
-                                : isMine
-                                  ? "bg-blue-600 text-white"
-                                  : "bg-gray-100 text-gray-900"
+                            className={`max-w-[75%] rounded-3xl px-5 py-3 shadow-sm ${
+                              mine
+                                ? "bg-blue-600 text-white"
+                                : "bg-white text-slate-800"
                             }`}
                           >
-                            {repliedMessage && (
-                              <div
-                                className={`mb-2 max-w-full overflow-hidden rounded-xl border-l-4 px-3 py-2 text-xs ${
-                                  isMine
-                                    ? "border-blue-200 bg-blue-500 text-blue-50"
-                                    : "border-gray-300 bg-white text-gray-600"
-                                }`}
-                              >
-                                <p className="font-semibold">
-                                  Replying to{" "}
-                                  {repliedMessage.sender_id === userId
-                                    ? "you"
-                                    : "message"}
-                                </p>
-
-                                <p className="line-clamp-2 break-words [overflow-wrap:anywhere]">
-                                  {repliedMessage.is_deleted
-                                    ? "This message was deleted"
-                                    : repliedMessage.message_text}
-                                </p>
-                              </div>
+                            {!mine && (
+                              <p className="mb-1 text-xs font-black text-blue-700">
+                                {getSenderName(
+                                  message.sender_id,
+                                  selectedConversation.members,
+                                  userId,
+                                )}
+                              </p>
                             )}
 
-                            <p className="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">
-                              {message.is_deleted
-                                ? "This message was deleted"
-                                : message.message_text}
+                            <p className="whitespace-pre-wrap text-sm leading-6">
+                              {message.body}
                             </p>
 
                             <p
-                              className={`mt-1 text-[11px] ${
-                                message.is_deleted
-                                  ? "text-gray-400"
-                                  : isMine
-                                    ? "text-blue-100"
-                                    : "text-gray-400"
+                              className={`mt-2 text-[10px] font-semibold ${
+                                mine ? "text-blue-100" : "text-slate-400"
                               }`}
                             >
                               {formatTime(message.created_at)}
-
-                              {isMine &&
-                                message.id === latestOwnMessageId &&
-                                !message.is_deleted && (
-                                  <span>
-                                    {" "}
-                                    · {message.read_at ? "Seen" : "Sent"}
-                                  </span>
-                                )}
                             </p>
                           </div>
-
-                          {!message.is_deleted &&
-                            !message.id.startsWith("temp-") && (
-                              <div className="mt-1 hidden gap-2 text-xs group-hover:flex">
-                                <button
-                                  onClick={() => setReplyingTo(message)}
-                                  className="text-gray-500 hover:text-blue-600"
-                                >
-                                  Reply
-                                </button>
-
-                                <button
-                                  onClick={() =>
-                                    handleTogglePinMessage(message)
-                                  }
-                                  disabled={
-                                    messageActionLoadingId === message.id
-                                  }
-                                  className="text-gray-500 hover:text-yellow-600 disabled:opacity-50"
-                                >
-                                  {message.pinned_at ? "Unpin" : "Pin"}
-                                </button>
-
-                                {isMine && (
-                                  <button
-                                    onClick={() => handleDeleteMessage(message)}
-                                    disabled={
-                                      messageActionLoadingId === message.id
-                                    }
-                                    className="text-gray-500 hover:text-red-600 disabled:opacity-50"
-                                  >
-                                    Delete
-                                  </button>
-                                )}
-                              </div>
-                            )}
                         </div>
+                      );
+                    })
+                  )}
+
+                  {typingUsers.length > 0 && (
+                    <div className="flex justify-start">
+                      <div className="rounded-2xl bg-white px-4 py-2 text-xs font-semibold text-slate-500 shadow-sm">
+                        {typingUsers.map((user) => user.name).join(", ")}{" "}
+                        {typingUsers.length === 1 ? "is" : "are"} typing...
                       </div>
-                    );
-                  })
-                )}
-
-                {Object.values(typingUsers).some(Boolean) && (
-                  <div className="flex justify-start">
-                    <div className="rounded-2xl bg-gray-100 px-4 py-3 text-sm text-gray-500">
-                      Typing...
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
-                <div ref={messagesEndRef} />
-              </div>
-
-              <div className="border-t border-gray-100 p-4">
-                {replyingTo && (
-                  <div className="mb-3 flex items-start justify-between rounded-2xl bg-blue-50 p-3">
-                    <div>
-                      <p className="text-xs font-semibold text-blue-700">
-                        Replying to{" "}
-                        {replyingTo.sender_id === userId
-                          ? "your message"
-                          : "message"}
-                      </p>
-
-                      <p className="mt-1 line-clamp-2 text-sm text-blue-900">
-                        {replyingTo.is_deleted
-                          ? "This message was deleted"
-                          : replyingTo.message_text}
-                      </p>
-                    </div>
+                <footer className="border-t border-slate-100 p-4">
+                  <div className="flex gap-3">
+                    <textarea
+                      value={messageText}
+                      onChange={(e) =>
+                        handleChangeMessageText(e.target.value)
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendMessage();
+                        }
+                      }}
+                      placeholder="Write a message..."
+                      className="min-h-[52px] flex-1 resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none focus:border-blue-400"
+                    />
 
                     <button
-                      onClick={() => setReplyingTo(null)}
-                      className="text-sm font-semibold text-blue-700 hover:underline"
+                      onClick={handleSendMessage}
+                      disabled={sending || !messageText.trim()}
+                      className="rounded-2xl bg-blue-600 px-6 py-3 text-sm font-black text-white transition hover:bg-blue-700 disabled:opacity-60"
                     >
-                      Cancel
+                      {sending ? "Sending..." : "Send"}
                     </button>
                   </div>
-                )}
-
-                <div className="flex gap-3">
-                  <textarea
-                    value={messageText}
-                    onChange={(e) => {
-                      setMessageText(e.target.value);
-                      sendTypingSignal();
-                    }}
-                    placeholder="Write a message about the research collaboration..."
-                    rows={2}
-                    className="flex-1 resize-none rounded-2xl border border-gray-200 p-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-blue-500"
-                  />
-
-                  <button
-                    onClick={handleSendMessage}
-                    disabled={sending || !messageText.trim()}
-                    className="rounded-2xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {sending ? "Sending..." : "Send"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
+                </footer>
+              </>
+            )}
+          </section>
+        </div>
       </section>
     </main>
   );
