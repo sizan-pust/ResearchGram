@@ -23,7 +23,7 @@ export default function NotificationsClient() {
       )
       .eq("recipient_id", currentUserId)
       .order("created_at", { ascending: false })
-      .limit(100);
+      .limit(15);
 
     if (error) {
       console.log("LOAD NOTIFICATIONS PAGE ERROR:", error);

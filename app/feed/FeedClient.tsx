@@ -15,6 +15,7 @@ import FeedUI, {
 
 const PUBLIC_BUCKET_NAME = "content-files";
 const RESTRICTED_BUCKET_NAME = "restricted-papers";
+const FEED_FIRST_LOAD_LIMIT = 50;
 
 function detectAttachmentType(file: File) {
   const name = file.name.toLowerCase();
@@ -179,7 +180,8 @@ export default function FeedClient() {
       .select(
         "id, title, content, abstract, content_category, visibility_mode, full_paper_access_mode, allow_full_paper_request, doi, keywords, publication_status, publisher_name, publication_date, post_type, created_at, user_id, profiles:profiles(full_name, email, department, profile_pic_url)",
       )
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(FEED_FIRST_LOAD_LIMIT);
 
     if (contentError) {
       console.log("FETCH CONTENTS ERROR:", contentError);
@@ -498,6 +500,69 @@ export default function FeedClient() {
 
     load();
   }, [router]);
+  useEffect(() => {
+  if (!userId) return;
+
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleFeedRefresh = () => {
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+    }
+
+    refreshTimer = setTimeout(() => {
+      fetchPosts(userId);
+    }, 800);
+  };
+
+  const channel = supabase
+    .channel(`feed-realtime-${userId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "contents",
+      },
+      scheduleFeedRefresh,
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "comments",
+      },
+      scheduleFeedRefresh,
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "content_attachments",
+      },
+      scheduleFeedRefresh,
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "content_authors",
+      },
+      scheduleFeedRefresh,
+    )
+    .subscribe();
+
+  return () => {
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+    }
+
+    supabase.removeChannel(channel);
+  };
+}, [userId]);
 
   const resetPostForm = () => {
     setTitle("");

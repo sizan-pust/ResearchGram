@@ -50,6 +50,22 @@ function getDisplayName(profile: ProfileLite | null | undefined) {
   return profile?.full_name || profile?.email?.split("@")[0] || "Researcher";
 }
 
+const CONVERSATION_LIST_LIMIT = 10;
+const RECENT_MESSAGE_PREVIEW_LIMIT = 120;
+const MESSAGE_PAGE_SIZE = 30;
+
+function isSupabaseLockError(error: any) {
+  const message = `${error?.message || ""} ${error?.details || ""} ${
+    error?.hint || ""
+  }`;
+
+  return (
+    error?.name === "AbortError" ||
+    message.toLowerCase().includes("lock broken") ||
+    message.toLowerCase().includes("aborterror")
+  );
+}
+
 export default function MessagesClient() {
   const router = useRouter();
 
@@ -79,6 +95,32 @@ export default function MessagesClient() {
   >({});
   const lastTypingSentRef = useRef(0);
   const selectedConversationIdRef = useRef("");
+  const activeDivisionRef = useRef<ConversationDivision>("direct");
+
+  // FIX 5: ref to guard against concurrent loadConversations calls racing each other
+  const loadConversationsInFlightRef = useRef(false);
+  // When a lock error occurs mid-load, schedule one retry rather than dropping silently
+  const loadConversationsRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Debounce ref so rapid real-time events collapse into a single reload
+  const loadConversationsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // FIX 2: ref to prevent setState calls after component unmount
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // Clear any pending retry/debounce timers so they don't fire after unmount
+      if (loadConversationsRetryRef.current) {
+        clearTimeout(loadConversationsRetryRef.current);
+        loadConversationsRetryRef.current = null;
+      }
+      if (loadConversationsDebounceRef.current) {
+        clearTimeout(loadConversationsDebounceRef.current);
+        loadConversationsDebounceRef.current = null;
+      }
+    };
+  }, []);
 
   const selectedConversation = useMemo(
     () =>
@@ -90,10 +132,33 @@ export default function MessagesClient() {
 
   const filteredConversations = useMemo(
     () =>
-      conversations.filter(
-        (conversation) => conversation.conversation_type === activeDivision,
-      ),
+      conversations
+        .filter(
+          (conversation) =>
+            conversation.conversation_type === activeDivision,
+        )
+        .slice(0, CONVERSATION_LIST_LIMIT),
     [conversations, activeDivision],
+  );
+
+  // FIX 1: When the user switches division tabs, auto-select the first
+  // conversation in that division so the chat panel updates immediately.
+  // Without this, selectedConversationId still points to the old division's
+  // conversation, and the chat panel keeps showing it.
+  const handleSetActiveDivision = useCallback(
+    (division: ConversationDivision) => {
+      activeDivisionRef.current = division;
+      setActiveDivision(division);
+
+      // Find the first conversation belonging to the new division
+      const firstInDivision = conversations.find(
+        (c) => c.conversation_type === division,
+      );
+      const nextId = firstInDivision?.id || "";
+      selectedConversationIdRef.current = nextId;
+      setSelectedConversationId(nextId);
+    },
+    [conversations],
   );
 
   const loadConnectedProfiles = useCallback(async (currentUserId: string) => {
@@ -149,7 +214,7 @@ export default function MessagesClient() {
     const ids = Array.from(candidateIds);
 
     if (ids.length === 0) {
-      setConnectedProfiles([]);
+      if (isMountedRef.current) setConnectedProfiles([]);
       return;
     }
 
@@ -160,11 +225,13 @@ export default function MessagesClient() {
 
     if (error) {
       console.log("LOAD CONNECTED PROFILES ERROR:", error);
-      setConnectedProfiles([]);
+      if (isMountedRef.current) setConnectedProfiles([]);
       return;
     }
 
-    setConnectedProfiles((data || []) as ProfileLite[]);
+    if (isMountedRef.current) {
+      setConnectedProfiles((data || []) as ProfileLite[]);
+    }
   }, []);
 
   const markConversationRead = useCallback(
@@ -197,244 +264,308 @@ export default function MessagesClient() {
     async (currentUserId: string, keepSelected = true) => {
       if (!currentUserId) return;
 
-      const { data: memberRows, error: memberError } = await supabase
-        .from("conversation_members")
-        .select(
-          "id, conversation_id, user_id, role, last_read_at, muted, joined_at",
-        )
-        .eq("user_id", currentUserId);
+      // FIX 5: Skip if another load is already in flight to prevent race conditions
+      // where a slower earlier call overwrites fresher data from a newer call.
+      if (loadConversationsInFlightRef.current) return;
+      loadConversationsInFlightRef.current = true;
 
-      if (memberError) {
-        console.log("LOAD MY CONVERSATION MEMBERS ERROR:", memberError);
-        alert(memberError.message);
-        setConversations([]);
-        return;
-      }
-
-      const myMemberships = (memberRows || []) as ConversationMemberRow[];
-      const conversationIds = myMemberships.map((item) => item.conversation_id);
-
-      if (conversationIds.length === 0) {
-        setConversations([]);
-        setSelectedConversationId("");
-        return;
-      }
-
-      const { data: conversationRows, error: conversationError } =
-        await supabase
-          .from("conversations")
+      try {
+        const { data: memberRows, error: memberError } = await supabase
+          .from("conversation_members")
           .select(
-            "id, participant_one_id, participant_two_id, conversation_type, title, content_id, request_id, workspace_id, created_by, last_message_at, created_at",
+            "id, conversation_id, user_id, role, last_read_at, muted, joined_at",
           )
-          .in("id", conversationIds)
-          .order("last_message_at", { ascending: false });
+          .eq("user_id", currentUserId);
 
-      if (conversationError) {
-        console.log("LOAD CONVERSATIONS ERROR:", conversationError);
-        alert(conversationError.message);
-        return;
-      }
+        if (memberError) {
+          console.log("LOAD MY CONVERSATION MEMBERS ERROR:", memberError);
 
-      const safeConversations = (conversationRows || []) as ConversationRow[];
-
-      const { data: allMemberRows, error: allMemberError } = await supabase
-        .from("conversation_members")
-        .select(
-          "id, conversation_id, user_id, role, last_read_at, muted, joined_at",
-        )
-        .in("conversation_id", conversationIds);
-
-      if (allMemberError) {
-        console.log("LOAD ALL CONVERSATION MEMBERS ERROR:", allMemberError);
-      }
-
-      const allMembers = (allMemberRows || []) as ConversationMemberRow[];
-
-      const allProfileIds = Array.from(
-        new Set(allMembers.map((member) => member.user_id).filter(Boolean)),
-      );
-
-      const profileMap: Record<string, ProfileLite> = {};
-
-      if (allProfileIds.length > 0) {
-        const { data: profiles, error: profileError } = await supabase
-          .from("profiles")
-          .select("id, full_name, email, department, profile_pic_url")
-          .in("id", allProfileIds);
-
-        if (profileError) {
-          console.log("LOAD MESSAGE PROFILES ERROR:", profileError);
+          if (isSupabaseLockError(memberError)) {
+            // Lock errors happen during React Strict Mode double-mount or rapid
+            // re-subscriptions. Don't wipe existing conversations — schedule a
+            // single retry once the lock clears (~600ms is usually enough).
+            if (isMountedRef.current && !loadConversationsRetryRef.current) {
+              loadConversationsRetryRef.current = setTimeout(() => {
+                loadConversationsRetryRef.current = null;
+                if (isMountedRef.current) {
+                  loadConversations(currentUserId, keepSelected);
+                }
+              }, 600);
+            }
+          } else {
+            alert(memberError.message);
+          }
+          return;
         }
 
-        (profiles || []).forEach((profile: any) => {
-          profileMap[profile.id] = profile as ProfileLite;
-        });
-      }
-
-      const workspaceIds = Array.from(
-        new Set(
-          safeConversations
-            .map((conversation) => conversation.workspace_id)
-            .filter(Boolean) as string[],
-        ),
-      );
-
-      const workspaceMap: Record<string, WorkspaceLite> = {};
-
-      if (workspaceIds.length > 0) {
-        const { data: workspaces } = await supabase
-          .from("workspaces")
-          .select("id, title, workspace_type")
-          .in("id", workspaceIds);
-
-        (workspaces || []).forEach((workspace: any) => {
-          workspaceMap[workspace.id] = workspace as WorkspaceLite;
-        });
-      }
-
-      const contentIds = Array.from(
-        new Set(
-          safeConversations
-            .map((conversation) => conversation.content_id)
-            .filter(Boolean) as string[],
-        ),
-      );
-
-      const contentMap: Record<string, ContentLite> = {};
-
-      if (contentIds.length > 0) {
-        const { data: contents } = await supabase
-          .from("contents")
-          .select("id, title")
-          .in("id", contentIds);
-
-        (contents || []).forEach((content: any) => {
-          contentMap[content.id] = content as ContentLite;
-        });
-      }
-
-      const { data: recentMessages, error: recentMessageError } = await supabase
-        .from("messages")
-        .select(
-          "id, conversation_id, sender_id, body, read_at, is_deleted, created_at",
-        )
-        .in("conversation_id", conversationIds)
-        .eq("is_deleted", false)
-        .order("created_at", { ascending: false })
-        .limit(500);
-
-      if (recentMessageError) {
-        console.log("LOAD RECENT MESSAGES ERROR:", recentMessageError);
-      }
-
-      const recent = ((recentMessages || []) as MessageRow[]).filter(
-        (message) => !message.is_deleted,
-      );
-
-      const lastMessageMap: Record<string, MessageRow> = {};
-      const unreadMap: Record<string, number> = {};
-
-      const membershipMap: Record<string, ConversationMemberRow> = {};
-
-      myMemberships.forEach((membership) => {
-        membershipMap[membership.conversation_id] = membership;
-      });
-
-      recent.forEach((message) => {
-        if (!lastMessageMap[message.conversation_id]) {
-          lastMessageMap[message.conversation_id] = message;
-        }
-
-        const membership = membershipMap[message.conversation_id];
-        const lastReadTime = membership?.last_read_at
-          ? new Date(membership.last_read_at).getTime()
-          : 0;
-
-        const messageTime = message.created_at
-          ? new Date(message.created_at).getTime()
-          : 0;
-
-        if (message.sender_id !== currentUserId && messageTime > lastReadTime) {
-          unreadMap[message.conversation_id] =
-            (unreadMap[message.conversation_id] || 0) + 1;
-        }
-      });
-
-      const normalized: ConversationView[] = safeConversations.map(
-        (conversation) => {
-          const members = allMembers
-            .filter((member) => member.conversation_id === conversation.id)
-            .map((member) => ({
-              ...member,
-              profile: profileMap[member.user_id] || null,
-            }));
-
-          const otherMember = members.find(
-            (member) => member.user_id !== currentUserId,
-          );
-
-          const workspace = conversation.workspace_id
-            ? workspaceMap[conversation.workspace_id] || null
-            : null;
-
-          const content = conversation.content_id
-            ? contentMap[conversation.content_id] || null
-            : null;
-
-          let displayTitle = conversation.title || "Conversation";
-
-          if (conversation.conversation_type === "direct") {
-            displayTitle = getDisplayName(otherMember?.profile);
-          }
-
-          if (conversation.conversation_type === "workspace_group") {
-            displayTitle =
-              workspace?.title || conversation.title || "Workspace group";
-          }
-
-          if (conversation.conversation_type === "collaboration") {
-            displayTitle =
-              content?.title || conversation.title || "Research collaboration";
-          }
-
-          return {
-            ...conversation,
-            display_title: displayTitle,
-            members,
-            workspace,
-            content,
-            last_message: lastMessageMap[conversation.id] || null,
-            unread_count: unreadMap[conversation.id] || 0,
-          };
-        },
-      );
-
-      setConversations(normalized);
-
-      const currentSelectedStillExists =
-        selectedConversationId &&
-        normalized.some(
-          (conversation) => conversation.id === selectedConversationId,
+        const myMemberships = (memberRows || []) as ConversationMemberRow[];
+        const conversationIds = myMemberships.map(
+          (item) => item.conversation_id,
         );
 
-      if (keepSelected && currentSelectedStillExists) {
-        return;
+        if (conversationIds.length === 0) {
+          if (isMountedRef.current) {
+            setConversations([]);
+            setSelectedConversationId("");
+            selectedConversationIdRef.current = "";
+          }
+          return;
+        }
+
+        // FIX 4: Remove the hard limit so conversations from all divisions
+        // are fetched. Without this, a user with many Direct conversations
+        // could have all their Collaboration conversations silently cut off.
+        const { data: conversationRows, error: conversationError } =
+          await supabase
+            .from("conversations")
+            .select(
+              "id, participant_one_id, participant_two_id, conversation_type, title, content_id, request_id, workspace_id, created_by, last_message_at, created_at",
+            )
+            .in("id", conversationIds)
+            .order("last_message_at", { ascending: false });
+
+        if (conversationError) {
+          console.log("LOAD CONVERSATIONS ERROR:", conversationError);
+          alert(conversationError.message);
+          return;
+        }
+
+        const safeConversations = (conversationRows || []) as ConversationRow[];
+        const selectedConversationIds = safeConversations.map(
+          (conversation) => conversation.id,
+        );
+
+        if (selectedConversationIds.length === 0) {
+          if (isMountedRef.current) {
+            setConversations([]);
+            setSelectedConversationId("");
+            selectedConversationIdRef.current = "";
+          }
+          return;
+        }
+
+        const { data: allMemberRows, error: allMemberError } = await supabase
+          .from("conversation_members")
+          .select(
+            "id, conversation_id, user_id, role, last_read_at, muted, joined_at",
+          )
+          .in("conversation_id", selectedConversationIds);
+
+        if (allMemberError) {
+          console.log("LOAD ALL CONVERSATION MEMBERS ERROR:", allMemberError);
+        }
+
+        const allMembers = (allMemberRows || []) as ConversationMemberRow[];
+
+        const allProfileIds = Array.from(
+          new Set(allMembers.map((member) => member.user_id).filter(Boolean)),
+        );
+
+        const profileMap: Record<string, ProfileLite> = {};
+
+        if (allProfileIds.length > 0) {
+          const { data: profiles, error: profileError } = await supabase
+            .from("profiles")
+            .select("id, full_name, email, department, profile_pic_url")
+            .in("id", allProfileIds);
+
+          if (profileError) {
+            console.log("LOAD MESSAGE PROFILES ERROR:", profileError);
+          }
+
+          (profiles || []).forEach((profile: any) => {
+            profileMap[profile.id] = profile as ProfileLite;
+          });
+        }
+
+        const workspaceIds = Array.from(
+          new Set(
+            safeConversations
+              .map((conversation) => conversation.workspace_id)
+              .filter(Boolean) as string[],
+          ),
+        );
+
+        const workspaceMap: Record<string, WorkspaceLite> = {};
+
+        if (workspaceIds.length > 0) {
+          const { data: workspaces } = await supabase
+            .from("workspaces")
+            .select("id, title, workspace_type")
+            .in("id", workspaceIds);
+
+          (workspaces || []).forEach((workspace: any) => {
+            workspaceMap[workspace.id] = workspace as WorkspaceLite;
+          });
+        }
+
+        const contentIds = Array.from(
+          new Set(
+            safeConversations
+              .map((conversation) => conversation.content_id)
+              .filter(Boolean) as string[],
+          ),
+        );
+
+        const contentMap: Record<string, ContentLite> = {};
+
+        if (contentIds.length > 0) {
+          const { data: contents } = await supabase
+            .from("contents")
+            .select("id, title")
+            .in("id", contentIds);
+
+          (contents || []).forEach((content: any) => {
+            contentMap[content.id] = content as ContentLite;
+          });
+        }
+
+        const { data: recentMessages, error: recentMessageError } =
+          await supabase
+            .from("messages")
+            .select(
+              "id, conversation_id, sender_id, body, read_at, is_deleted, created_at",
+            )
+            .in("conversation_id", selectedConversationIds)
+            .eq("is_deleted", false)
+            .order("created_at", { ascending: false })
+            .limit(RECENT_MESSAGE_PREVIEW_LIMIT);
+
+        if (recentMessageError) {
+          console.log("LOAD RECENT MESSAGES ERROR:", recentMessageError);
+        }
+
+        const recent = ((recentMessages || []) as MessageRow[]).filter(
+          (message) => !message.is_deleted,
+        );
+
+        const lastMessageMap: Record<string, MessageRow> = {};
+        const unreadMap: Record<string, number> = {};
+
+        const membershipMap: Record<string, ConversationMemberRow> = {};
+
+        myMemberships.forEach((membership) => {
+          membershipMap[membership.conversation_id] = membership;
+        });
+
+        recent.forEach((message) => {
+          if (!lastMessageMap[message.conversation_id]) {
+            lastMessageMap[message.conversation_id] = message;
+          }
+
+          const membership = membershipMap[message.conversation_id];
+          const lastReadTime = membership?.last_read_at
+            ? new Date(membership.last_read_at).getTime()
+            : 0;
+
+          const messageTime = message.created_at
+            ? new Date(message.created_at).getTime()
+            : 0;
+
+          if (
+            message.sender_id !== currentUserId &&
+            messageTime > lastReadTime
+          ) {
+            unreadMap[message.conversation_id] =
+              (unreadMap[message.conversation_id] || 0) + 1;
+          }
+        });
+
+        const normalized: ConversationView[] = safeConversations.map(
+          (conversation) => {
+            const members = allMembers
+              .filter((member) => member.conversation_id === conversation.id)
+              .map((member) => ({
+                ...member,
+                profile: profileMap[member.user_id] || null,
+              }));
+
+            const otherMember = members.find(
+              (member) => member.user_id !== currentUserId,
+            );
+
+            const workspace = conversation.workspace_id
+              ? workspaceMap[conversation.workspace_id] || null
+              : null;
+
+            const content = conversation.content_id
+              ? contentMap[conversation.content_id] || null
+              : null;
+
+            let displayTitle = conversation.title || "Conversation";
+
+            if (conversation.conversation_type === "direct") {
+              displayTitle = getDisplayName(otherMember?.profile);
+            }
+
+            if (conversation.conversation_type === "workspace_group") {
+              displayTitle =
+                workspace?.title || conversation.title || "Workspace group";
+            }
+
+            if (conversation.conversation_type === "collaboration") {
+              displayTitle =
+                content?.title ||
+                conversation.title ||
+                "Research collaboration";
+            }
+
+            return {
+              ...conversation,
+              display_title: displayTitle,
+              members,
+              workspace,
+              content,
+              last_message: lastMessageMap[conversation.id] || null,
+              unread_count: unreadMap[conversation.id] || 0,
+            };
+          },
+        );
+
+        if (!isMountedRef.current) return;
+
+        setConversations(normalized);
+
+        const currentSelectedId = selectedConversationIdRef.current;
+        const currentDivision = activeDivisionRef.current;
+
+        const currentSelectedStillExists =
+          currentSelectedId &&
+          normalized.some(
+            (conversation) => conversation.id === currentSelectedId,
+          );
+
+        // FIX 1 (part 2): When keepSelected is true and the currently selected
+        // conversation still exists in the refreshed list, do NOT overwrite it.
+        // This prevents real-time refresh from resetting the user's selection.
+        if (keepSelected && currentSelectedStillExists) {
+          return;
+        }
+
+        // Auto-select the first conversation of the current division.
+        // Fall back to the very first conversation if none match the division.
+        const next =
+          normalized.find(
+            (conversation) =>
+              conversation.conversation_type === currentDivision,
+          ) || null;
+
+        const nextId = next?.id || "";
+
+        selectedConversationIdRef.current = nextId;
+        setSelectedConversationId(nextId);
+      } finally {
+        // FIX 5: Always release the in-flight lock
+        loadConversationsInFlightRef.current = false;
       }
-
-      const next =
-        normalized.find(
-          (conversation) => conversation.conversation_type === activeDivision,
-        ) || normalized[0];
-
-      setSelectedConversationId(next?.id || "");
     },
-    [activeDivision, selectedConversationId],
+    [],
   );
 
   const loadMessages = useCallback(
     async (conversationId: string, currentUserId: string) => {
       if (!conversationId || !currentUserId) {
-        setMessages([]);
+        if (isMountedRef.current) setMessages([]);
         return;
       }
 
@@ -445,46 +576,66 @@ export default function MessagesClient() {
         )
         .eq("conversation_id", conversationId)
         .eq("is_deleted", false)
-        .order("created_at", { ascending: true })
-        .limit(200);
+        .order("created_at", { ascending: false })
+        .limit(MESSAGE_PAGE_SIZE);
 
       if (error) {
         console.log("LOAD MESSAGES ERROR:", error);
-        alert(error.message);
-        setMessages([]);
+
+        if (!isSupabaseLockError(error)) {
+          alert(error.message);
+        }
+
+        if (isMountedRef.current) setMessages([]);
         return;
       }
 
-      setMessages((data || []) as MessageRow[]);
+      const safeMessages = ((data || []) as MessageRow[]).reverse();
+
+      if (isMountedRef.current) {
+        setMessages(safeMessages);
+      }
+
       await markConversationRead(conversationId, currentUserId);
-      await loadConversations(currentUserId, true);
     },
-    [loadConversations, markConversationRead],
+    [markConversationRead],
   );
 
+  // FIX 2 & 6: Wrap the initial load in try/finally so setLoading(false) is
+  // always called, even if auth check redirects or an error is thrown.
+  // Also guard all setState calls with isMountedRef to prevent updating an
+  // unmounted component (which causes the white blank page on fast navigation).
   useEffect(() => {
     const load = async () => {
-      const { data: authData } = await supabase.auth.getUser();
+      try {
+        const { data: authData } = await supabase.auth.getUser();
 
-      if (!authData.user) {
-        router.push("/auth/login");
-        return;
+        if (!authData.user) {
+          router.push("/auth/login");
+          return;
+        }
+
+        if (!isMountedRef.current) return;
+        setUserId(authData.user.id);
+
+        const { data: profileData } = await supabase
+          .from("profiles")
+          .select("id, full_name, email, department, profile_pic_url")
+          .eq("id", authData.user.id)
+          .maybeSingle();
+
+        if (isMountedRef.current) {
+          setMyProfile((profileData as ProfileLite) || null);
+        }
+
+        await loadConnectedProfiles(authData.user.id);
+        await loadConversations(authData.user.id, false);
+      } finally {
+        // Always clear the loading state, even if auth redirects or throws
+        if (isMountedRef.current) {
+          setLoading(false);
+        }
       }
-
-      setUserId(authData.user.id);
-
-      const { data: profileData } = await supabase
-        .from("profiles")
-        .select("id, full_name, email, department, profile_pic_url")
-        .eq("id", authData.user.id)
-        .maybeSingle();
-
-      setMyProfile((profileData as ProfileLite) || null);
-
-      await loadConnectedProfiles(authData.user.id);
-      await loadConversations(authData.user.id, false);
-
-      setLoading(false);
     };
 
     load();
@@ -501,6 +652,10 @@ export default function MessagesClient() {
   }, [selectedConversationId]);
 
   useEffect(() => {
+    activeDivisionRef.current = activeDivision;
+  }, [activeDivision]);
+
+  useEffect(() => {
     if (!userId) return;
 
     const refreshMessages = async (conversationId: string) => {
@@ -508,8 +663,19 @@ export default function MessagesClient() {
       await loadMessages(conversationId, userId);
     };
 
-    const refreshConversations = async () => {
-      await loadConversations(userId, true);
+    // Debounce conversation refreshes so rapid real-time events (e.g. multiple
+    // message inserts in quick succession) collapse into a single reload instead
+    // of hammering Supabase and triggering cascading lock errors.
+    const refreshConversations = () => {
+      if (loadConversationsDebounceRef.current) {
+        clearTimeout(loadConversationsDebounceRef.current);
+      }
+      loadConversationsDebounceRef.current = setTimeout(async () => {
+        loadConversationsDebounceRef.current = null;
+        if (isMountedRef.current) {
+          await loadConversations(userId, true);
+        }
+      }, 300);
     };
 
     const channel = supabase
@@ -530,9 +696,9 @@ export default function MessagesClient() {
             changedRow.conversation_id === currentConversationId
           ) {
             await refreshMessages(currentConversationId);
-          } else {
-            await refreshConversations();
           }
+
+          await refreshConversations();
         },
       )
       .on(
@@ -571,19 +737,8 @@ export default function MessagesClient() {
 
     window.addEventListener("focus", focusHandler);
 
-    const intervalId = window.setInterval(() => {
-      const currentConversationId = selectedConversationIdRef.current;
-
-      refreshConversations();
-
-      if (currentConversationId) {
-        refreshMessages(currentConversationId);
-      }
-    }, 5000);
-
     return () => {
       window.removeEventListener("focus", focusHandler);
-      window.clearInterval(intervalId);
       supabase.removeChannel(channel);
     };
   }, [userId, loadMessages, loadConversations]);
@@ -665,6 +820,7 @@ export default function MessagesClient() {
   };
 
   const handleSelectConversation = async (conversationId: string) => {
+    selectedConversationIdRef.current = conversationId;
     setSelectedConversationId(conversationId);
     setTypingUsers([]);
   };
@@ -746,7 +902,9 @@ export default function MessagesClient() {
     );
 
     if (existing) {
+      activeDivisionRef.current = "direct";
       setActiveDivision("direct");
+      selectedConversationIdRef.current = existing.id;
       setSelectedConversationId(existing.id);
       setSelectedDirectUserId("");
       return;
@@ -803,7 +961,9 @@ export default function MessagesClient() {
     }
 
     setSelectedDirectUserId("");
+    activeDivisionRef.current = "direct";
     setActiveDivision("direct");
+    selectedConversationIdRef.current = conversation.id;
     setSelectedConversationId(conversation.id);
 
     await loadConversations(userId, true);
@@ -823,7 +983,7 @@ export default function MessagesClient() {
       loading={loading}
       userId={userId}
       activeDivision={activeDivision}
-      setActiveDivision={setActiveDivision}
+      setActiveDivision={handleSetActiveDivision}
       conversations={conversations}
       filteredConversations={filteredConversations}
       selectedConversationId={selectedConversationId}

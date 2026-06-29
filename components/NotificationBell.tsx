@@ -112,7 +112,7 @@ export default function NotificationBell() {
       )
       .eq("recipient_id", currentUserId)
       .order("created_at", { ascending: false })
-      .limit(10);
+      .limit(15);
 
     if (error) {
       console.log("NOTIFICATION LIST ERROR:", error);
