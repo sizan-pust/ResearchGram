@@ -107,6 +107,7 @@ type FeedUIProps = {
   uploading: boolean;
   userId: string;
   fullName: string;
+  profilePicUrl: string;
   title: string;
   content: string;
   abstract: string;
@@ -410,7 +411,7 @@ function AttachmentPreview({ att, onOpen }: { att: Attachment; onOpen: () => voi
 // ─── Main UI ─────────────────────────────────────────────────────────────────
 
 export default function FeedUI({
-  loading, uploading, userId, fullName,
+  loading, uploading, userId, fullName, profilePicUrl,
   title, content, abstract, postType, contentCategory, visibilityMode, fullPaperAccessMode, doi, keywords, fullPaperFile,
   posts, selectedFileNames,
   coAuthorSearch, authorSuggestions, selectedPlatformAuthors, manualAuthorName, manualAuthors,
@@ -490,7 +491,7 @@ if (loading) {
   // ── Composer collapsed strip ──────────────────────────────────────────────
   const ComposerStrip = (
     <div className="bg-card rounded-2xl border border-border shadow-sm p-4 flex items-center gap-3">
-      <Avatar name={fullName || "You"} size="md" />
+      <Avatar name={fullName || "You"} picUrl={profilePicUrl} size="md" />
       <button
         onClick={() => setComposerOpen(true)}
         className="flex-1 text-left px-4 py-3 bg-muted rounded-xl text-sm text-muted-foreground hover:bg-slate-100 transition-colors"
@@ -513,7 +514,7 @@ if (loading) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Avatar name={fullName || "You"} size="md" />
+          <Avatar name={fullName || "You"} picUrl={profilePicUrl} size="md" />
           <div>
             <p className="text-sm font-bold text-foreground">{fullName || "Researcher"}</p>
             <p className="text-xs text-muted-foreground">Publishing as you</p>
@@ -1170,7 +1171,7 @@ if (loading) {
 
               {/* Comment input */}
               <div className="flex items-center gap-3 pt-1">
-                <Avatar name={fullName || "You"} size="sm" />
+              <Avatar name={fullName || "You"} picUrl={profilePicUrl} size="sm" />
                 <div className="flex-1 flex items-center gap-2">
                   <input
                     type="text"
@@ -1202,48 +1203,104 @@ if (loading) {
   };
 
   // ── Left sidebar ──────────────────────────────────────────────────────────
-  const LeftSidebar = (
-    <aside className="space-y-4">
-      <div className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden">
-        <div className="h-14 bg-gradient-to-r from-indigo-500 via-violet-500 to-blue-600" />
-        <div className="px-4 pb-4 -mt-7">
-          <div className="w-16 h-16 rounded-2xl border-4 border-white flex items-center justify-center text-white font-bold text-lg mb-2 overflow-hidden" style={{ backgroundColor: colorFromString(fullName || userId) }}>
-            {getInitials(fullName)}
+ const LeftSidebar = (
+  <aside className="space-y-4">
+    <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+      <div className="h-14 bg-gradient-to-r from-indigo-500 via-violet-500 to-blue-600" />
+
+      <div className="-mt-7 px-4 pb-4">
+        <Avatar name={fullName || "You"} picUrl={profilePicUrl} size="lg" />
+
+        <div className="mt-3">
+          <p className="text-sm font-bold text-foreground">
+            {fullName || "Researcher"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Active ResearchGram profile
+          </p>
+        </div>
+
+        <div className="mt-4 space-y-2 border-t border-border pt-4">
+          <button
+            onClick={handleGoToWorkspace}
+            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors"
+          >
+            <GitBranch className="w-4 h-4" />
+            Project Workspace
+          </button>
+
+          <button
+            onClick={handleGoToMentorship}
+            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl bg-accent text-primary text-sm font-semibold border border-primary/20 hover:bg-indigo-100 transition-colors"
+          >
+            <Star className="w-4 h-4" />
+            Find Mentors
+          </button>
+        </div>
+
+        <div className="mt-4 border-t border-border pt-4">
+          <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            Shortcuts
+          </p>
+
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              {
+                label: "Researchers",
+                href: "/researchers",
+                icon: Search,
+              },
+              {
+                label: "Network",
+                href: "/network",
+                icon: Users,
+              },
+              {
+                label: "Requests",
+                href: "/requests",
+                icon: UserPlus,
+              },
+              {
+                label: "Messages",
+                href: "/messages",
+                icon: MessageCircle,
+              },
+            ].map((item) => (
+              <a
+                key={item.href}
+                href={item.href}
+                className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-border bg-muted/40 px-2 py-3 text-center text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary/30 hover:bg-accent hover:text-primary"
+              >
+                <item.icon className="h-4 w-4" />
+                {item.label}
+              </a>
+            ))}
           </div>
-          <p className="text-sm font-bold text-foreground">{fullName || "Researcher"}</p>
-          <p className="text-xs text-muted-foreground break-all">{userId.slice(0, 14)}…</p>
         </div>
       </div>
+    </div>
 
-      <div className="bg-card rounded-2xl border border-border shadow-sm p-4 space-y-2">
-        <button
-          onClick={handleGoToWorkspace}
-          className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors"
-        >
-          <GitBranch className="w-4 h-4" /> Project Workspace
-        </button>
-        <button
-          onClick={handleGoToMentorship}
-          className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl bg-accent text-primary text-sm font-semibold border border-primary/20 hover:bg-indigo-100 transition-colors"
-        >
-          <Star className="w-4 h-4" /> Find Mentors
-        </button>
-      </div>
+    <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-indigo-50 rounded-2xl border border-indigo-100 p-4">
+      <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest mb-3">
+        Platform Features
+      </p>
 
-      <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-indigo-50 rounded-2xl border border-indigo-100 p-4">
-        <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest mb-3">Platform Features</p>
-        <ul className="space-y-2">
-          {[
-            "📄  Publish & share research notes",
-            "🔒  Controlled full-paper access",
-            "🤝  Request & offer collaboration",
-            "🎓  Connect with research mentors",
-            "📂  Manage project workspaces",
-          ].map((f) => <li key={f} className="text-xs text-indigo-700 leading-relaxed">{f}</li>)}
-        </ul>
-      </div>
-    </aside>
-  );
+      <ul className="space-y-2">
+        {[
+          "📄  Publish & share research notes",
+          "🔒  Controlled full-paper access",
+          "🤝  Request & offer collaboration",
+          "🎓  Connect with research mentors",
+          "📂  Manage project workspaces",
+        ].map((f) => (
+          <li key={f} className="text-xs text-indigo-700 leading-relaxed">
+            {f}
+          </li>
+        ))}
+      </ul>
+    </div>
+  </aside>
+);
 
   // ── Right sidebar ─────────────────────────────────────────────────────────
   const RightSidebar = (

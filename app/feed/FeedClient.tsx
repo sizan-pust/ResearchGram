@@ -86,7 +86,8 @@ export default function FeedClient() {
   const [uploading, setUploading] = useState(false);
 
   const [userId, setUserId] = useState("");
-  const [fullName, setFullName] = useState("");
+const [fullName, setFullName] = useState("");
+const [profilePicUrl, setProfilePicUrl] = useState("");
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -473,9 +474,9 @@ export default function FeedClient() {
 
     const { data: profileData, error: profileError } = await supabase
       .from("profiles")
-      .select(
-        "full_name, department, skills, interests, user_role, academic_level, onboarding_completed",
-      )
+     .select(
+  "full_name, department, skills, interests, user_role, academic_level, onboarding_completed, profile_pic_url",
+)
       .eq("id", currentUserId)
       .maybeSingle();
 
@@ -499,6 +500,7 @@ export default function FeedClient() {
     }
 
     setFullName(profileData.full_name || "");
+    setProfilePicUrl(profileData.profile_pic_url || "");
 
     await fetchPosts(currentUserId);
   } catch (error) {
@@ -1140,10 +1142,11 @@ export default function FeedClient() {
 
   return (
     <FeedUI
-      loading={loading}
-      uploading={uploading}
-      userId={userId}
-      fullName={fullName}
+  loading={loading}
+  uploading={uploading}
+  userId={userId}
+  fullName={fullName}
+  profilePicUrl={profilePicUrl}
       title={title}
       content={content}
       abstract={abstract}
