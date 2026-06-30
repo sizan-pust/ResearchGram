@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { createNotification } from "@/lib/notifications";
@@ -203,15 +204,22 @@ export default function RecommendationsClient() {
   }, [profiles, selectedPost, currentProfile, userId, existingRequestMap]);
 
   useEffect(() => {
-    const load = async () => {
-      const { data: authData } = await supabase.auth.getUser();
+  let cancelled = false;
 
-      if (!authData.user) {
+  const load = async () => {
+    setLoading(true);
+
+    try {
+      const authUser = await getCurrentUserSafe();
+
+      if (!authUser) {
         router.push("/auth/login");
         return;
       }
 
-      const activeUserId = authData.user.id;
+      if (cancelled) return;
+
+      const activeUserId = authUser.id;
       setUserId(activeUserId);
 
       const urlPostId =
@@ -231,6 +239,8 @@ export default function RecommendationsClient() {
         console.log("CURRENT PROFILE ERROR:", profileError);
       }
 
+      if (cancelled) return;
+
       setCurrentProfile((profileData as Profile) || null);
 
       const { data: postData, error: postError } = await supabase
@@ -242,9 +252,10 @@ export default function RecommendationsClient() {
       if (postError) {
         console.log("MY POSTS ERROR:", postError);
         alert(postError.message);
-        setLoading(false);
         return;
       }
+
+      if (cancelled) return;
 
       const safePosts = (postData || []) as ResearchPost[];
       setMyPosts(safePosts);
@@ -267,16 +278,32 @@ export default function RecommendationsClient() {
       if (allProfilesError) {
         console.log("ALL PROFILES ERROR:", allProfilesError);
         alert(allProfilesError.message);
-        setLoading(false);
         return;
       }
 
-      setProfiles((allProfiles || []) as Profile[]);
-      setLoading(false);
-    };
+      if (cancelled) return;
 
-    load();
-  }, [router]);
+      setProfiles((allProfiles || []) as Profile[]);
+    } catch (error) {
+      if (isAuthLockError(error)) {
+        console.log("RECOMMENDATIONS AUTH LOCK ERROR:", error);
+        return;
+      }
+
+      console.log("RECOMMENDATIONS LOAD ERROR:", error);
+    } finally {
+      if (!cancelled) {
+        setLoading(false);
+      }
+    }
+  };
+
+  load();
+
+  return () => {
+    cancelled = true;
+  };
+}, [router]);
 
   useEffect(() => {
     const loadRequests = async () => {

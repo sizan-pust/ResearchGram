@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import ProfileUI from "./UI";
@@ -31,47 +32,66 @@ export default function ProfileClient() {
   const [profilePicFile, setProfilePicFile] = useState<File | null>(null);
   const [coverPhotoFile, setCoverPhotoFile] = useState<File | null>(null);
 
-  useEffect(() => {
-    const loadProfile = async () => {
-      try {
-        const { data: authData, error: authError } =
-          await supabase.auth.getUser();
+ useEffect(() => {
+  let cancelled = false;
 
-        if (authError || !authData.user) {
-          router.push("/auth/login");
-          return;
-        }
+  const loadProfile = async () => {
+    setLoading(true);
 
-        const user = authData.user;
+    try {
+      const authUser = await getCurrentUserSafe();
 
-        setUserId(user.id);
-        setEmail(user.email ?? "");
+      if (!authUser) {
+        router.push("/auth/login");
+        return;
+      }
 
-        const { data: profileData } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", user.id)
-          .single();
+      if (cancelled) return;
 
-        if (profileData) {
-          setName(profileData.full_name ?? "");
-          setDept(profileData.department ?? "");
-          setSkills(profileData.skills ?? "");
-          setInterests(profileData.interests ?? "");
-          setBio(profileData.bio ?? "");
-          setProfilePicUrl(profileData.profile_pic_url ?? "");
-          setCoverPhotoUrl(profileData.cover_photo_url ?? "");
-        }
+      setUserId(authUser.id);
+      setEmail(authUser.email ?? "");
 
-        setLoading(false);
-      } catch (error) {
-        console.error("Error loading profile:", error);
+      const { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", authUser.id)
+        .single();
+
+      if (profileError) {
+        console.log("LOAD PROFILE ERROR:", profileError);
+      }
+
+      if (cancelled) return;
+
+      if (profileData) {
+        setName(profileData.full_name ?? "");
+        setDept(profileData.department ?? "");
+        setSkills(profileData.skills ?? "");
+        setInterests(profileData.interests ?? "");
+        setBio(profileData.bio ?? "");
+        setProfilePicUrl(profileData.profile_pic_url ?? "");
+        setCoverPhotoUrl(profileData.cover_photo_url ?? "");
+      }
+    } catch (error) {
+      if (isAuthLockError(error)) {
+        console.log("PROFILE AUTH LOCK ERROR:", error);
+        return;
+      }
+
+      console.error("PROFILE LOAD ERROR:", error);
+    } finally {
+      if (!cancelled) {
         setLoading(false);
       }
-    };
+    }
+  };
 
-    loadProfile();
-  }, [router]);
+  loadProfile();
+
+  return () => {
+    cancelled = true;
+  };
+}, [router]);
 
   const handleProfilePicSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

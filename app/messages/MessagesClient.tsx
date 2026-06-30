@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import MessagesUI, {
@@ -606,37 +607,45 @@ export default function MessagesClient() {
   // Also guard all setState calls with isMountedRef to prevent updating an
   // unmounted component (which causes the white blank page on fast navigation).
   useEffect(() => {
-    const load = async () => {
-      try {
-        const { data: authData } = await supabase.auth.getUser();
+  const load = async () => {
+  try {
+    const authUser = await getCurrentUserSafe();
 
-        if (!authData.user) {
-          router.push("/auth/login");
-          return;
-        }
+    if (!authUser) {
+      router.push("/auth/login");
+      return;
+    }
 
-        if (!isMountedRef.current) return;
-        setUserId(authData.user.id);
+    if (!isMountedRef.current) return;
 
-        const { data: profileData } = await supabase
-          .from("profiles")
-          .select("id, full_name, email, department, profile_pic_url")
-          .eq("id", authData.user.id)
-          .maybeSingle();
+    const activeUserId = authUser.id;
+    setUserId(activeUserId);
 
-        if (isMountedRef.current) {
-          setMyProfile((profileData as ProfileLite) || null);
-        }
+    const { data: profileData } = await supabase
+      .from("profiles")
+      .select("id, full_name, email, department, profile_pic_url")
+      .eq("id", activeUserId)
+      .maybeSingle();
 
-        await loadConnectedProfiles(authData.user.id);
-        await loadConversations(authData.user.id, false);
-      } finally {
-        // Always clear the loading state, even if auth redirects or throws
-        if (isMountedRef.current) {
-          setLoading(false);
-        }
-      }
-    };
+    if (isMountedRef.current) {
+      setMyProfile((profileData as ProfileLite) || null);
+    }
+
+    await loadConnectedProfiles(activeUserId);
+    await loadConversations(activeUserId, false);
+  } catch (error) {
+    if (isAuthLockError(error)) {
+      console.log("MESSAGES AUTH LOCK ERROR:", error);
+      return;
+    }
+
+    console.log("MESSAGES LOAD ERROR:", error);
+  } finally {
+    if (isMountedRef.current) {
+      setLoading(false);
+    }
+  }
+};
 
     load();
   }, [router, loadConnectedProfiles, loadConversations]);

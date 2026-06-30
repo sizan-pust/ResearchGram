@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { createNotification } from "@/lib/notifications";
@@ -43,17 +44,18 @@ export default function RequestsClient() {
   >([]);
   const [sentRequests, setSentRequests] = useState<UnifiedRequestView[]>([]);
 
-  const loadRequests = async () => {
-    setLoading(true);
+const loadRequests = async () => {
+  setLoading(true);
 
-    const { data: authData } = await supabase.auth.getUser();
+  try {
+    const authUser = await getCurrentUserSafe();
 
-    if (!authData.user) {
+    if (!authUser) {
       router.push("/auth/login");
       return;
     }
 
-    const currentUserId = authData.user.id;
+    const currentUserId = authUser.id;
     setUserId(currentUserId);
 
     const [
@@ -331,8 +333,17 @@ export default function RequestsClient() {
 
     setReceivedRequests(sortByNewest(normalizedReceived));
     setSentRequests(sortByNewest(normalizedSent));
+  } catch (error) {
+    if (isAuthLockError(error)) {
+      console.log("REQUESTS AUTH LOCK ERROR:", error);
+      return;
+    }
+
+    console.log("REQUESTS LOAD ERROR:", error);
+  } finally {
     setLoading(false);
-  };
+  }
+};
 
   useEffect(() => {
     loadRequests();

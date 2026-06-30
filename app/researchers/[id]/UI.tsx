@@ -1,6 +1,7 @@
 "use client";
 
 import AppNav from "@/components/AppNav";
+import ResearchGramSkeleton from "@/components/ResearchGramSkeleton";
 
 export type ResearcherProfile = {
   id: string;

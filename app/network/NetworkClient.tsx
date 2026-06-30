@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import NetworkUI, {
@@ -24,14 +25,28 @@ export default function NetworkClient() {
   const loadNetwork = async () => {
     setLoading(true);
 
-    const { data: authData } = await supabase.auth.getUser();
+   let authUser = null;
 
-    if (!authData.user) {
-      router.push("/auth/login");
-      return;
-    }
+try {
+  authUser = await getCurrentUserSafe();
+} catch (error) {
+  if (isAuthLockError(error)) {
+    console.log("NETWORK AUTH LOCK ERROR:", error);
+    setLoading(false);
+    return;
+  }
 
-    const userId = authData.user.id;
+  console.log("NETWORK AUTH ERROR:", error);
+  setLoading(false);
+  return;
+}
+
+if (!authUser) {
+  router.push("/auth/login");
+  return;
+}
+
+const userId = authUser.id;
     setCurrentUserId(userId);
 
     const { data: connectionData, error: connectionError } = await supabase

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import WorkspaceUI, {
@@ -133,137 +134,156 @@ export default function WorkspaceClient() {
     };
   }, [tasks]);
 
-  const loadTeamAndCollaborators = async (workspaceId: string) => {
-    const { data: authData } = await supabase.auth.getUser();
-    const activeUserId = authData.user?.id || userId;
+const loadTeamAndCollaborators = async (workspaceId: string) => {
+  let activeUserId = userId;
 
-    if (!activeUserId) return;
+  if (!activeUserId) {
+    try {
+      const authUser = await getCurrentUserSafe();
 
-    const { data: memberRows, error: memberError } = await supabase
-      .from("workspace_members")
-      .select("id, workspace_id, user_id, role, created_at")
-      .eq("workspace_id", workspaceId)
-      .order("created_at", { ascending: true });
-
-    if (memberError) {
-      console.log("LOAD WORKSPACE MEMBERS ERROR:", memberError);
-      setMembers([]);
-      return;
-    }
-
-    const safeMemberRows = (memberRows || []) as WorkspaceMember[];
-    const memberIds = safeMemberRows.map((member) => member.user_id);
-    const memberIdSet = new Set(memberIds);
-
-    let profileMap: Record<string, Profile> = {};
-
-    if (memberIds.length > 0) {
-      const { data: memberProfiles, error: memberProfileError } = await supabase
-        .from("profiles")
-        .select(
-          "id, email, full_name, department, profile_pic_url, skills, interests",
-        )
-        .in("id", memberIds);
-
-      if (memberProfileError) {
-        console.log("LOAD MEMBER PROFILES ERROR:", memberProfileError);
+      if (!authUser) {
+        router.push("/auth/login");
+        return;
       }
 
-      profileMap = (memberProfiles || []).reduce(
-        (acc, profile) => {
-          acc[profile.id] = profile as Profile;
-          return acc;
-        },
-        {} as Record<string, Profile>,
-      );
+      activeUserId = authUser.id;
+      setUserId(authUser.id);
+    } catch (error) {
+      if (isAuthLockError(error)) {
+        console.log("WORKSPACE TEAM AUTH LOCK ERROR:", error);
+        return;
+      }
+
+      console.log("WORKSPACE TEAM AUTH ERROR:", error);
+      return;
+    }
+  }
+
+  if (!activeUserId) return;
+
+  const { data: memberRows, error: memberError } = await supabase
+    .from("workspace_members")
+    .select("id, workspace_id, user_id, role, created_at")
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: true });
+
+  if (memberError) {
+    console.log("LOAD WORKSPACE MEMBERS ERROR:", memberError);
+    setMembers([]);
+    return;
+  }
+
+  const safeMemberRows = (memberRows || []) as WorkspaceMember[];
+  const memberIds = safeMemberRows.map((member) => member.user_id);
+  const memberIdSet = new Set(memberIds);
+
+  let profileMap: Record<string, Profile> = {};
+
+  if (memberIds.length > 0) {
+    const { data: memberProfiles, error: memberProfileError } = await supabase
+      .from("profiles")
+      .select(
+        "id, email, full_name, department, profile_pic_url, skills, interests",
+      )
+      .in("id", memberIds);
+
+    if (memberProfileError) {
+      console.log("LOAD MEMBER PROFILES ERROR:", memberProfileError);
     }
 
-    const normalizedMembers: WorkspaceMember[] = safeMemberRows.map(
-      (member) => ({
-        ...member,
-        profile: profileMap[member.user_id] || null,
-      }),
+    profileMap = (memberProfiles || []).reduce(
+      (acc, profile) => {
+        acc[profile.id] = profile as Profile;
+        return acc;
+      },
+      {} as Record<string, Profile>,
     );
+  }
 
-    setMembers(normalizedMembers);
+  const normalizedMembers: WorkspaceMember[] = safeMemberRows.map((member) => ({
+    ...member,
+    profile: profileMap[member.user_id] || null,
+  }));
 
-    const candidateIds = new Set<string>();
+  setMembers(normalizedMembers);
 
-    const addCandidatePair = (
-      firstUserId: string | null | undefined,
-      secondUserId: string | null | undefined,
-    ) => {
-      if (!firstUserId || !secondUserId) return;
+  const candidateIds = new Set<string>();
 
-      const otherUserId =
-        firstUserId === activeUserId
-          ? secondUserId
-          : secondUserId === activeUserId
-            ? firstUserId
-            : null;
+  const addCandidatePair = (
+    firstUserId: string | null | undefined,
+    secondUserId: string | null | undefined,
+  ) => {
+    if (!firstUserId || !secondUserId) return;
 
-      if (!otherUserId) return;
-      if (otherUserId === activeUserId) return;
-      if (memberIdSet.has(otherUserId)) return;
+    const otherUserId =
+      firstUserId === activeUserId
+        ? secondUserId
+        : secondUserId === activeUserId
+          ? firstUserId
+          : null;
 
-      candidateIds.add(otherUserId);
-    };
+    if (!otherUserId) return;
+    if (otherUserId === activeUserId) return;
+    if (memberIdSet.has(otherUserId)) return;
 
-    const { data: connectionRows } = await supabase
-      .from("user_connections")
-      .select("user_one_id, user_two_id")
-      .or(`user_one_id.eq.${activeUserId},user_two_id.eq.${activeUserId}`);
-
-    (connectionRows || []).forEach((connection: any) => {
-      addCandidatePair(connection.user_one_id, connection.user_two_id);
-    });
-
-    const { data: acceptedResearchRows } = await supabase
-      .from("research_requests")
-      .select("requester_id, receiver_id, status")
-      .eq("status", "accepted")
-      .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
-
-    (acceptedResearchRows || []).forEach((request: any) => {
-      addCandidatePair(request.requester_id, request.receiver_id);
-    });
-
-    const { data: acceptedProfileRows } = await supabase
-      .from("profile_requests")
-      .select("requester_id, receiver_id, status")
-      .eq("status", "accepted")
-      .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
-
-    (acceptedProfileRows || []).forEach((request: any) => {
-      addCandidatePair(request.requester_id, request.receiver_id);
-    });
-
-    const candidateIdList = Array.from(candidateIds);
-
-    if (candidateIdList.length === 0) {
-      setCollaboratorOptions([]);
-      setSelectedCollaboratorId("");
-      return;
-    }
-
-    const { data: candidateProfiles, error: candidateProfileError } =
-      await supabase
-        .from("profiles")
-        .select(
-          "id, email, full_name, department, profile_pic_url, skills, interests",
-        )
-        .in("id", candidateIdList);
-
-    if (candidateProfileError) {
-      console.log("LOAD COLLABORATOR OPTIONS ERROR:", candidateProfileError);
-      setCollaboratorOptions([]);
-      setSelectedCollaboratorId("");
-      return;
-    }
-
-    setCollaboratorOptions((candidateProfiles || []) as Profile[]);
-    setSelectedCollaboratorId("");
+    candidateIds.add(otherUserId);
   };
+
+  const { data: connectionRows } = await supabase
+    .from("user_connections")
+    .select("user_one_id, user_two_id")
+    .or(`user_one_id.eq.${activeUserId},user_two_id.eq.${activeUserId}`);
+
+  (connectionRows || []).forEach((connection: any) => {
+    addCandidatePair(connection.user_one_id, connection.user_two_id);
+  });
+
+  const { data: acceptedResearchRows } = await supabase
+    .from("research_requests")
+    .select("requester_id, receiver_id, status")
+    .eq("status", "accepted")
+    .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
+
+  (acceptedResearchRows || []).forEach((request: any) => {
+    addCandidatePair(request.requester_id, request.receiver_id);
+  });
+
+  const { data: acceptedProfileRows } = await supabase
+    .from("profile_requests")
+    .select("requester_id, receiver_id, status")
+    .eq("status", "accepted")
+    .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
+
+  (acceptedProfileRows || []).forEach((request: any) => {
+    addCandidatePair(request.requester_id, request.receiver_id);
+  });
+
+  const candidateIdList = Array.from(candidateIds);
+
+  if (candidateIdList.length === 0) {
+    setCollaboratorOptions([]);
+    setSelectedCollaboratorId("");
+    return;
+  }
+
+  const { data: candidateProfiles, error: candidateProfileError } =
+    await supabase
+      .from("profiles")
+      .select(
+        "id, email, full_name, department, profile_pic_url, skills, interests",
+      )
+      .in("id", candidateIdList);
+
+  if (candidateProfileError) {
+    console.log("LOAD COLLABORATOR OPTIONS ERROR:", candidateProfileError);
+    setCollaboratorOptions([]);
+    setSelectedCollaboratorId("");
+    return;
+  }
+
+  setCollaboratorOptions((candidateProfiles || []) as Profile[]);
+  setSelectedCollaboratorId("");
+};
 
   const loadWorkspaceDetails = async (workspaceId: string) => {
     const [
@@ -371,22 +391,45 @@ export default function WorkspaceClient() {
     }
   };
 
-  useEffect(() => {
-    const load = async () => {
-      const { data: authData } = await supabase.auth.getUser();
+useEffect(() => {
+  let cancelled = false;
 
-      if (!authData.user) {
+  const load = async () => {
+    setLoading(true);
+
+    try {
+      const authUser = await getCurrentUserSafe();
+
+      if (!authUser) {
         router.push("/auth/login");
         return;
       }
 
-      setUserId(authData.user.id);
-      await loadWorkspaces();
-      setLoading(false);
-    };
+      if (cancelled) return;
 
-    load();
-  }, [router]);
+      setUserId(authUser.id);
+
+      await loadWorkspaces();
+    } catch (error) {
+      if (isAuthLockError(error)) {
+        console.log("WORKSPACE AUTH LOCK ERROR:", error);
+        return;
+      }
+
+      console.log("WORKSPACE LOAD ERROR:", error);
+    } finally {
+      if (!cancelled) {
+        setLoading(false);
+      }
+    }
+  };
+
+  load();
+
+  return () => {
+    cancelled = true;
+  };
+}, [router]);
 
   const handleSelectWorkspace = async (workspaceId: string) => {
     setSelectedWorkspaceId(workspaceId);

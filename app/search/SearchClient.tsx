@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import SearchUI, {
@@ -228,17 +229,18 @@ export default function SearchClient() {
 
   const trimmedQuery = useMemo(() => query.trim(), [query]);
 
-  const loadSearch = async (currentQuery: string) => {
-    setLoading(true);
+const loadSearch = async (currentQuery: string) => {
+  setLoading(true);
 
-    const { data: authData } = await supabase.auth.getUser();
+  try {
+    const authUser = await getCurrentUserSafe();
 
-    if (!authData.user) {
+    if (!authUser) {
       router.push("/auth/login");
       return;
     }
 
-    const currentUserId = authData.user.id;
+    const currentUserId = authUser.id;
     setUserId(currentUserId);
 
     const profileSelect =
@@ -345,15 +347,18 @@ export default function SearchClient() {
     if (!q) {
       setProfiles([]);
       setContents([]);
-      setLoading(false);
       return;
     }
 
-    await supabase.from("search_events").insert({
+    const { error: searchEventError } = await supabase.from("search_events").insert({
       user_id: currentUserId,
       query: q,
       search_type: "global",
     });
+
+    if (searchEventError) {
+      console.log("SAVE SEARCH EVENT ERROR:", searchEventError);
+    }
 
     const matchedProfiles = allProfiles
       .filter((profile) =>
@@ -423,8 +428,17 @@ export default function SearchClient() {
 
     setProfiles(matchedProfiles as ProfileSearchResult[]);
     setContents(matchedContents as ContentSearchResult[]);
+  } catch (error) {
+    if (isAuthLockError(error)) {
+      console.log("SEARCH AUTH LOCK ERROR:", error);
+      return;
+    }
+
+    console.log("SEARCH LOAD ERROR:", error);
+  } finally {
     setLoading(false);
-  };
+  }
+};
 
   useEffect(() => {
     setQuery(urlQuery);

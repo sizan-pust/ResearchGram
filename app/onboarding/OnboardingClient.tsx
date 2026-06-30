@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import OnboardingUI from "./UI";
@@ -129,29 +130,40 @@ export default function OnboardingClient() {
     ],
   );
 
-  useEffect(() => {
-    const loadProfile = async () => {
-      const { data: authData } = await supabase.auth.getUser();
+useEffect(() => {
+  let cancelled = false;
 
-      if (!authData.user) {
+  const loadProfile = async () => {
+    setLoading(true);
+
+    try {
+      const authUser = await getCurrentUserSafe();
+
+      if (!authUser) {
         router.push("/auth/login");
         return;
       }
 
-      setUserId(authData.user.id);
-      setEmail(authData.user.email || "");
+      if (cancelled) return;
+
+      const activeUserId = authUser.id;
+
+      setUserId(activeUserId);
+      setEmail(authUser.email || "");
 
       const { data: profileData, error } = await supabase
         .from("profiles")
         .select(
           "full_name, email, department, skills, interests, bio, user_role, academic_level, batch, session, graduation_year, current_position, company_or_institution, research_area, expertise, office_hours, mentorship_available",
         )
-        .eq("id", authData.user.id)
+        .eq("id", activeUserId)
         .maybeSingle();
 
       if (error) {
         console.log("LOAD ONBOARDING PROFILE ERROR:", error);
       }
+
+      if (cancelled) return;
 
       if (profileData) {
         setFullName(profileData.full_name || "");
@@ -175,12 +187,26 @@ export default function OnboardingClient() {
         setOfficeHours(profileData.office_hours || "");
         setMentorshipAvailable(Boolean(profileData.mentorship_available));
       }
+    } catch (error) {
+      if (isAuthLockError(error)) {
+        console.log("ONBOARDING AUTH LOCK ERROR:", error);
+        return;
+      }
 
-      setLoading(false);
-    };
+      console.log("ONBOARDING LOAD ERROR:", error);
+    } finally {
+      if (!cancelled) {
+        setLoading(false);
+      }
+    }
+  };
 
-    loadProfile();
-  }, [router]);
+  loadProfile();
+
+  return () => {
+    cancelled = true;
+  };
+}, [router]);
 
   const validateForm = () => {
     if (!fullName.trim()) return "Full name is required.";

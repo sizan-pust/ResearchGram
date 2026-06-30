@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import MentorshipUI, {
@@ -241,15 +242,18 @@ export default function MentorshipClient() {
       .sort((a, b) => b.score - a.score);
   }, [mentorCandidates, currentProfile, searchQuery, existingRequestMap]);
 
-  const loadPage = async () => {
-    const { data: authData } = await supabase.auth.getUser();
+const loadPage = async () => {
+  setLoading(true);
 
-    if (!authData.user) {
+  try {
+    const authUser = await getCurrentUserSafe();
+
+    if (!authUser) {
       router.push("/auth/login");
       return;
     }
 
-    const activeUserId = authData.user.id;
+    const activeUserId = authUser.id;
     setUserId(activeUserId);
 
     const { data: myProfileData, error: myProfileError } = await supabase
@@ -301,8 +305,17 @@ export default function MentorshipClient() {
     }
 
     setExistingRequests((requestData || []) as ExistingMentorshipRequest[]);
+  } catch (error) {
+    if (isAuthLockError(error)) {
+      console.log("MENTORSHIP AUTH LOCK ERROR:", error);
+      return;
+    }
+
+    console.log("MENTORSHIP LOAD ERROR:", error);
+  } finally {
     setLoading(false);
-  };
+  }
+};
 
   useEffect(() => {
     loadPage();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { createNotification } from "@/lib/notifications";
@@ -455,48 +456,62 @@ export default function FeedClient() {
   };
 
   useEffect(() => {
-    const load = async () => {
-      const { data: authData } = await supabase.auth.getUser();
+   const load = async () => {
+  setLoading(true);
 
-      if (!authData.user) {
-        router.push("/auth/login");
-        return;
-      }
+  try {
+    const authUser = await getCurrentUserSafe();
 
-      setUserId(authData.user.id);
+    if (!authUser) {
+      router.push("/auth/login");
+      return;
+    }
 
-      const { data: profileData, error: profileError } = await supabase
-        .from("profiles")
-        .select(
-          "full_name, department, skills, interests, user_role, academic_level, onboarding_completed",
-        )
-        .eq("id", authData.user.id)
-        .maybeSingle();
+    const currentUserId = authUser.id;
 
-      if (profileError) {
-        console.log("FEED PROFILE CHECK ERROR:", profileError);
-      }
+    setUserId(currentUserId);
 
-      const needsOnboarding =
-        !profileData ||
-        !profileData.onboarding_completed ||
-        !profileData.full_name ||
-        !profileData.department ||
-        !profileData.skills ||
-        !profileData.interests ||
-        !profileData.user_role ||
-        !profileData.academic_level;
+    const { data: profileData, error: profileError } = await supabase
+      .from("profiles")
+      .select(
+        "full_name, department, skills, interests, user_role, academic_level, onboarding_completed",
+      )
+      .eq("id", currentUserId)
+      .maybeSingle();
 
-      if (needsOnboarding) {
-        router.push("/onboarding?next=/feed");
-        return;
-      }
+    if (profileError) {
+      console.log("FEED PROFILE CHECK ERROR:", profileError);
+    }
 
-      setFullName(profileData.full_name || "");
+    const needsOnboarding =
+      !profileData ||
+      !profileData.onboarding_completed ||
+      !profileData.full_name ||
+      !profileData.department ||
+      !profileData.skills ||
+      !profileData.interests ||
+      !profileData.user_role ||
+      !profileData.academic_level;
 
-      await fetchPosts(authData.user.id);
-      setLoading(false);
-    };
+    if (needsOnboarding) {
+      router.push("/onboarding?next=/feed");
+      return;
+    }
+
+    setFullName(profileData.full_name || "");
+
+    await fetchPosts(currentUserId);
+  } catch (error) {
+    if (isAuthLockError(error)) {
+      console.log("FEED AUTH LOCK ERROR:", error);
+      return;
+    }
+
+    console.log("FEED LOAD ERROR:", error);
+  } finally {
+    setLoading(false);
+  }
+};
 
     load();
   }, [router]);

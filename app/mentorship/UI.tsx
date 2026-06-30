@@ -1,5 +1,5 @@
 "use client";
-
+import ResearchGramSkeleton from "@/components/ResearchGramSkeleton";
 import AppNav from "@/components/AppNav";
 
 export type Profile = {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import NotificationsUI, { type NotificationRow } from "./UI";
@@ -33,21 +34,38 @@ export default function NotificationsClient() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    const load = async () => {
-      const { data } = await supabase.auth.getUser();
+ useEffect(() => {
+  let cancelled = false;
 
-      if (!data.user) {
+  const load = async () => {
+    try {
+      const authUser = await getCurrentUserSafe();
+
+      if (!authUser) {
         router.push("/auth/login");
         return;
       }
 
-      setUserId(data.user.id);
-      await loadNotifications(data.user.id);
-    };
+      if (cancelled) return;
 
-    load();
-  }, [router]);
+      setUserId(authUser.id);
+      await loadNotifications(authUser.id);
+    } catch (error) {
+      if (isAuthLockError(error)) {
+        console.log("NOTIFICATIONS AUTH LOCK ERROR:", error);
+        return;
+      }
+
+      console.log("NOTIFICATIONS LOAD ERROR:", error);
+    }
+  };
+
+  load();
+
+  return () => {
+    cancelled = true;
+  };
+}, [router]);
 
   useEffect(() => {
     if (!userId) return;

@@ -1,5 +1,5 @@
 "use client";
-
+import ResearchGramSkeleton from "@/components/ResearchGramSkeleton";
 type OnboardingUIProps = {
   loading: boolean;
   saving: boolean;

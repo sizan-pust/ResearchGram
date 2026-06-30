@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getCurrentUserSafe, isAuthLockError } from "@/lib/authSafe";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import ResearchersUI, {
@@ -20,102 +21,134 @@ export default function ResearchersClient() {
   >({});
   const [connectingId, setConnectingId] = useState<string | null>(null);
 
-  const loadConnectionStatuses = async (
-    currentUserId: string,
-    researcherProfiles: ResearcherProfile[],
-  ) => {
-    const otherUserIds = researcherProfiles
-      .map((profile) => profile.id)
-      .filter((id) => id !== currentUserId);
+  const loadConnectionStatuses = useCallback(
+    async (
+      activeUserId: string,
+      researcherProfiles: ResearcherProfile[],
+    ) => {
+      const otherUserIds = researcherProfiles
+        .map((profile) => profile.id)
+        .filter((id) => id !== activeUserId);
 
-    const statusMap: Record<string, ConnectionStatus> = {};
+      const statusMap: Record<string, ConnectionStatus> = {};
 
-    researcherProfiles.forEach((profile) => {
-      statusMap[profile.id] = profile.id === currentUserId ? "self" : "none";
-    });
+      researcherProfiles.forEach((profile) => {
+        statusMap[profile.id] =
+          profile.id === activeUserId ? "self" : "none";
+      });
 
-    if (otherUserIds.length === 0) {
+      if (otherUserIds.length === 0) {
+        setConnectionStatusMap(statusMap);
+        return;
+      }
+
+      const { data: connections, error: connectionError } = await supabase
+        .from("user_connections")
+        .select("user_one_id, user_two_id")
+        .or(`user_one_id.eq.${activeUserId},user_two_id.eq.${activeUserId}`);
+
+      if (connectionError) {
+        console.log("FETCH CONNECTIONS ERROR:", connectionError);
+      }
+
+      (connections || []).forEach((connection: any) => {
+        const otherId =
+          connection.user_one_id === activeUserId
+            ? connection.user_two_id
+            : connection.user_one_id;
+
+        statusMap[otherId] = "connected";
+      });
+
+      const { data: requests, error: requestError } = await supabase
+        .from("profile_requests")
+        .select("requester_id, receiver_id, status")
+        .eq("request_type", "connection")
+        .eq("status", "pending")
+        .or(`requester_id.eq.${activeUserId},receiver_id.eq.${activeUserId}`);
+
+      if (requestError) {
+        console.log("FETCH PROFILE REQUESTS ERROR:", requestError);
+      }
+
+      (requests || []).forEach((request: any) => {
+        if (request.requester_id === activeUserId) {
+          statusMap[request.receiver_id] = "requested";
+        }
+
+        if (request.receiver_id === activeUserId) {
+          statusMap[request.requester_id] = "received";
+        }
+      });
+
       setConnectionStatusMap(statusMap);
-      return;
-    }
-
-    const { data: connections, error: connectionError } = await supabase
-      .from("user_connections")
-      .select("user_one_id, user_two_id")
-      .or(`user_one_id.eq.${currentUserId},user_two_id.eq.${currentUserId}`);
-
-    if (connectionError) {
-      console.log("FETCH CONNECTIONS ERROR:", connectionError);
-    }
-
-    (connections || []).forEach((connection: any) => {
-      const otherId =
-        connection.user_one_id === currentUserId
-          ? connection.user_two_id
-          : connection.user_one_id;
-
-      statusMap[otherId] = "connected";
-    });
-
-    const { data: requests, error: requestError } = await supabase
-      .from("profile_requests")
-      .select("requester_id, receiver_id, status")
-      .eq("request_type", "connection")
-      .eq("status", "pending")
-      .or(`requester_id.eq.${currentUserId},receiver_id.eq.${currentUserId}`);
-
-    if (requestError) {
-      console.log("FETCH PROFILE REQUESTS ERROR:", requestError);
-    }
-
-    (requests || []).forEach((request: any) => {
-      if (request.requester_id === currentUserId) {
-        statusMap[request.receiver_id] = "requested";
-      }
-
-      if (request.receiver_id === currentUserId) {
-        statusMap[request.requester_id] = "received";
-      }
-    });
-
-    setConnectionStatusMap(statusMap);
-  };
+    },
+    [],
+  );
 
   useEffect(() => {
+    let cancelled = false;
+
     const loadResearchers = async () => {
-      const { data: authData } = await supabase.auth.getUser();
+      setLoading(true);
 
-      if (!authData.user) {
-        router.push("/auth/login");
-        return;
+      try {
+        const authUser = await getCurrentUserSafe();
+
+        if (!authUser) {
+          router.push("/auth/login");
+          return;
+        }
+
+        if (cancelled) return;
+
+        const activeUserId = authUser.id;
+        setCurrentUserId(activeUserId);
+
+        const { data, error } = await supabase
+          .from("profiles")
+          .select(
+            "id, email, full_name, department, skills, interests, bio, profile_pic_url",
+          )
+          .order("full_name", { ascending: true });
+
+        if (error) {
+          console.log("FETCH RESEARCHERS ERROR:", error);
+
+          if (!cancelled) {
+            setProfiles([]);
+          }
+
+          return;
+        }
+
+        const loadedProfiles = (data || []) as ResearcherProfile[];
+
+        if (cancelled) return;
+
+        setProfiles(loadedProfiles);
+
+        await loadConnectionStatuses(activeUserId, loadedProfiles);
+      } catch (error) {
+        if (isAuthLockError(error)) {
+          console.log("RESEARCHERS AUTH LOCK ERROR:", error);
+          return;
+        }
+
+        console.log("RESEARCHERS LOAD ERROR:", error);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
-
-      setCurrentUserId(authData.user.id);
-
-      const { data, error } = await supabase
-        .from("profiles")
-        .select(
-          "id, email, full_name, department, skills, interests, bio, profile_pic_url",
-        )
-        .order("full_name", { ascending: true });
-
-      if (error) {
-        console.log("FETCH RESEARCHERS ERROR:", error);
-        setProfiles([]);
-        setLoading(false);
-        return;
-      }
-
-      const loadedProfiles = (data || []) as ResearcherProfile[];
-
-      setProfiles(loadedProfiles);
-      await loadConnectionStatuses(authData.user.id, loadedProfiles);
-
-      setLoading(false);
     };
 
     loadResearchers();
-  }, [router]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router, loadConnectionStatuses]);
 
   const filteredProfiles = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -186,7 +219,9 @@ export default function ResearchersClient() {
       setSearchQuery={setSearchQuery}
       handleSendConnectionRequest={handleSendConnectionRequest}
       handleGoToProfile={() => router.push("/profile")}
-      handleGoToResearcher={(profileId) => router.push(`/researchers/${profileId}`)}
+      handleGoToResearcher={(profileId) =>
+        router.push(`/researchers/${profileId}`)
+      }
     />
   );
 }
