@@ -631,18 +631,21 @@ export default function AppNav({ activePage }: AppNavProps) {
           className="max-w-[1440px] mx-auto px-4 lg:px-6 flex items-center gap-3 lg:gap-4"
           style={{ height: 60 }}
         >
-          {/* Logo */}
-          <button
-            onClick={() => router.push("/feed")}
-            className="flex items-center gap-2.5 flex-shrink-0"
-          >
-            <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center shadow-sm">
-              <BookOpen className="w-4 h-4 text-white" />
-            </div>
-            <span className="font-extrabold text-lg tracking-tight text-foreground hidden sm:block">
-              Research<span className="text-primary">Gram</span>
-            </span>
-          </button>
+        {/* Logo */}
+<button
+  onClick={() => router.push("/feed")}
+  className="flex items-center gap-2.5 flex-shrink-0"
+>
+  <img
+    src="/logos/researchgram-rg-logo.png"
+    alt="ResearchGram logo"
+    className="h-9 w-9 object-contain"
+  />
+
+  <span className="font-extrabold text-lg tracking-tight text-foreground hidden sm:block">
+    Research<span className="text-primary">Gram</span>
+  </span>
+</button>
 
           {/* Search */}
           <form

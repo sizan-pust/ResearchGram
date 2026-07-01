@@ -306,9 +306,11 @@ export default function HomePage() {
       >
         <div className="max-w-[1280px] mx-auto px-4 lg:px-6 h-16 flex items-center gap-4">
           <Link href="/" className="flex items-center gap-2.5 flex-shrink-0">
-            <div className="w-8 h-8 rounded-xl bg-primary flex items-center justify-center shadow-sm">
-              <BookOpen className="w-4 h-4 text-white" />
-            </div>
+            <img
+  src="/logos/researchgram-rg-logo.png"
+  alt="ResearchGram logo"
+  className="h-8 w-8 object-contain"
+/>
             <span className="font-extrabold text-lg tracking-tight text-foreground">
               Research<span className="text-primary">Gram</span>
             </span>
@@ -688,9 +690,11 @@ export default function HomePage() {
       <footer className="border-t border-border bg-white/60 px-4 lg:px-6 py-10">
         <div className="max-w-[1280px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <Link href="/" className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
-              <BookOpen className="w-3.5 h-3.5 text-white" />
-            </div>
+            <img
+  src="/logos/researchgram-rg-logo.png"
+  alt="ResearchGram logo"
+  className="h-8 w-8 object-contain"
+/>
             <span className="font-extrabold text-foreground">
               Research<span className="text-primary">Gram</span>
             </span>
