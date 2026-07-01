@@ -23,6 +23,16 @@ export default function ProfileClient() {
   const [skills, setSkills] = useState("");
   const [interests, setInterests] = useState("");
   const [bio, setBio] = useState("");
+  const [orcidId, setOrcidId] = useState("");
+const [googleScholarUrl, setGoogleScholarUrl] = useState("");
+const [researchGateUrl, setResearchGateUrl] = useState("");
+const [personalWebsiteUrl, setPersonalWebsiteUrl] = useState("");
+
+const [externalPublicationCount, setExternalPublicationCount] = useState(0);
+const [externalCitationCount, setExternalCitationCount] = useState(0);
+const [externalHIndex, setExternalHIndex] = useState(0);
+const [externalMetricsSyncedAt, setExternalMetricsSyncedAt] = useState("");
+const [syncingMetrics, setSyncingMetrics] = useState(false);
 
   const [profilePicUrl, setProfilePicUrl] = useState("");
   const [coverPhotoUrl, setCoverPhotoUrl] = useState("");
@@ -31,6 +41,21 @@ export default function ProfileClient() {
 
   const [profilePicFile, setProfilePicFile] = useState<File | null>(null);
   const [coverPhotoFile, setCoverPhotoFile] = useState<File | null>(null);
+
+function cleanOrcidId(value: string) {
+  return value
+    .trim()
+    .replace("https://orcid.org/", "")
+    .replace("http://orcid.org/", "");
+}
+
+function isValidOrcidId(value: string) {
+  if (!value.trim()) return true;
+
+  return /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/i.test(cleanOrcidId(value));
+}
+
+
 
  useEffect(() => {
   let cancelled = false;
@@ -63,15 +88,25 @@ export default function ProfileClient() {
 
       if (cancelled) return;
 
-      if (profileData) {
-        setName(profileData.full_name ?? "");
-        setDept(profileData.department ?? "");
-        setSkills(profileData.skills ?? "");
-        setInterests(profileData.interests ?? "");
-        setBio(profileData.bio ?? "");
-        setProfilePicUrl(profileData.profile_pic_url ?? "");
-        setCoverPhotoUrl(profileData.cover_photo_url ?? "");
-      }
+if (profileData) {
+  setName(profileData.full_name ?? "");
+  setDept(profileData.department ?? "");
+  setSkills(profileData.skills ?? "");
+  setInterests(profileData.interests ?? "");
+  setBio(profileData.bio ?? "");
+  setProfilePicUrl(profileData.profile_pic_url ?? "");
+  setCoverPhotoUrl(profileData.cover_photo_url ?? "");
+
+  setOrcidId(profileData.orcid_id ?? "");
+  setGoogleScholarUrl(profileData.google_scholar_url ?? "");
+  setResearchGateUrl(profileData.researchgate_url ?? "");
+  setPersonalWebsiteUrl(profileData.personal_website_url ?? "");
+
+  setExternalPublicationCount(profileData.external_publication_count ?? 0);
+  setExternalCitationCount(profileData.external_citation_count ?? 0);
+  setExternalHIndex(profileData.external_h_index ?? 0);
+  setExternalMetricsSyncedAt(profileData.external_metrics_synced_at ?? "");
+}
     } catch (error) {
       if (isAuthLockError(error)) {
         console.log("PROFILE AUTH LOCK ERROR:", error);
@@ -222,19 +257,28 @@ export default function ProfileClient() {
       alert("You must be logged in.");
       return;
     }
+    if (!isValidOrcidId(orcidId)) {
+  alert("Invalid ORCID iD. Example format: 0000-0002-1825-0097");
+  return;
+}
 
     setSaving(true);
 
     try {
-      const { error } = await supabase.from("profiles").upsert({
-        id: userId,
-        email,
-        full_name: name,
-        department: dept,
-        skills,
-        interests,
-        bio,
-      });
+    const { error } = await supabase.from("profiles").upsert({
+  id: userId,
+  email,
+  full_name: name,
+  department: dept,
+  skills,
+  interests,
+  bio,
+  orcid_id: cleanOrcidId(orcidId) || null,
+  google_scholar_url: googleScholarUrl.trim() || null,
+  researchgate_url: researchGateUrl.trim() || null,
+  personal_website_url: personalWebsiteUrl.trim() || null,
+  updated_at: new Date().toISOString(),
+});
 
       if (error) throw error;
 
@@ -248,6 +292,87 @@ export default function ProfileClient() {
       setSaving(false);
     }
   };
+  const handleSyncExternalMetrics = async () => {
+  if (!userId) {
+    alert("You must be logged in.");
+    return;
+  }
+
+  const cleanId = cleanOrcidId(orcidId);
+
+  if (!cleanId) {
+    alert("Add your ORCID iD first.");
+    return;
+  }
+
+  if (!isValidOrcidId(cleanId)) {
+    alert("Invalid ORCID iD. Example format: 0000-0002-1825-0097");
+    return;
+  }
+
+  setSyncingMetrics(true);
+
+  try {
+    const orcidUrl = `https://orcid.org/${cleanId}`;
+
+    const openAlexUrl = `https://api.openalex.org/authors/${encodeURIComponent(
+      orcidUrl,
+    )}`;
+
+    const response = await fetch(openAlexUrl, {
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      alert(
+        "No OpenAlex author profile was found for this ORCID iD. The ORCID link is saved, but publication and citation metrics could not be synced.",
+      );
+      return;
+    }
+
+    const authorData = await response.json();
+
+    const publications = Number(authorData.works_count || 0);
+    const citations = Number(authorData.cited_by_count || 0);
+    const hIndex = Number(authorData.summary_stats?.h_index || 0);
+    const syncedAt = new Date().toISOString();
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        orcid_id: cleanId,
+        external_publication_count: publications,
+        external_citation_count: citations,
+        external_h_index: hIndex,
+        external_metrics_synced_at: syncedAt,
+        updated_at: syncedAt,
+      })
+      .eq("id", userId);
+
+    if (error) {
+      throw error;
+    }
+
+    setOrcidId(cleanId);
+    setExternalPublicationCount(publications);
+    setExternalCitationCount(citations);
+    setExternalHIndex(hIndex);
+    setExternalMetricsSyncedAt(syncedAt);
+
+    alert("Research metrics synced successfully.");
+  } catch (error) {
+    console.log("SYNC EXTERNAL METRICS ERROR:", error);
+    alert(
+      error instanceof Error
+        ? error.message
+        : "Could not sync research metrics.",
+    );
+  } finally {
+    setSyncingMetrics(false);
+  }
+};
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -266,6 +391,20 @@ export default function ProfileClient() {
       skills={skills}
       interests={interests}
       bio={bio}
+      orcidId={orcidId}
+googleScholarUrl={googleScholarUrl}
+researchGateUrl={researchGateUrl}
+personalWebsiteUrl={personalWebsiteUrl}
+externalPublicationCount={externalPublicationCount}
+externalCitationCount={externalCitationCount}
+externalHIndex={externalHIndex}
+externalMetricsSyncedAt={externalMetricsSyncedAt}
+syncingMetrics={syncingMetrics}
+handleSyncExternalMetrics={handleSyncExternalMetrics}
+setOrcidId={setOrcidId}
+setGoogleScholarUrl={setGoogleScholarUrl}
+setResearchGateUrl={setResearchGateUrl}
+setPersonalWebsiteUrl={setPersonalWebsiteUrl}
       profilePicUrl={profilePicUrl}
       coverPhotoUrl={coverPhotoUrl}
       previewProfileUrl={previewProfileUrl}

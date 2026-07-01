@@ -464,7 +464,10 @@ import {
   LogOut,
   Upload,
   Plus,
-  ImageIcon,
+ImageIcon,
+ExternalLink,
+Link2,
+RefreshCcw,
 } from "lucide-react";
 
 type ProfileUIProps = {
@@ -479,6 +482,16 @@ type ProfileUIProps = {
   skills: string;
   interests: string;
   bio: string;
+  orcidId: string;
+googleScholarUrl: string;
+researchGateUrl: string;
+personalWebsiteUrl: string;
+
+externalPublicationCount: number;
+externalCitationCount: number;
+externalHIndex: number;
+externalMetricsSyncedAt: string;
+syncingMetrics: boolean;
 
   profilePicUrl: string;
   coverPhotoUrl: string;
@@ -494,6 +507,11 @@ type ProfileUIProps = {
   setSkills: (value: string) => void;
   setInterests: (value: string) => void;
   setBio: (value: string) => void;
+  setOrcidId: (value: string) => void;
+setGoogleScholarUrl: (value: string) => void;
+setResearchGateUrl: (value: string) => void;
+setPersonalWebsiteUrl: (value: string) => void;
+handleSyncExternalMetrics: () => void;
 
   handleProfilePicSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleCoverPhotoSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -515,6 +533,31 @@ function getInitials(name: string, email: string) {
   const parts = source.split(/\s+/);
   return ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase() || "U";
 }
+function normalizeUrl(url: string) {
+  const clean = url.trim();
+
+  if (!clean) return "";
+
+  if (clean.startsWith("http://") || clean.startsWith("https://")) {
+    return clean;
+  }
+
+  return `https://${clean}`;
+}
+
+function formatSyncTime(value: string) {
+  if (!value) return "Not synced yet";
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(value));
+  } catch {
+    return "Not synced yet";
+  }
+}
 
 const DEFAULT_COVER =
   "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1440&h=280&fit=crop&auto=format";
@@ -529,8 +572,17 @@ export default function ProfileUI({
   dept,
   skills,
   interests,
-  bio,
-  profilePicUrl,
+bio,
+orcidId,
+googleScholarUrl,
+researchGateUrl,
+personalWebsiteUrl,
+externalPublicationCount,
+externalCitationCount,
+externalHIndex,
+externalMetricsSyncedAt,
+syncingMetrics,
+profilePicUrl,
   coverPhotoUrl,
   previewProfileUrl,
   previewCoverUrl,
@@ -542,7 +594,12 @@ export default function ProfileUI({
   setSkills,
   setInterests,
   setBio,
-  handleProfilePicSelect,
+setOrcidId,
+setGoogleScholarUrl,
+setResearchGateUrl,
+setPersonalWebsiteUrl,
+handleSyncExternalMetrics,
+handleProfilePicSelect,
   handleCoverPhotoSelect,
   handleUploadProfilePic,
   handleUploadCover,
@@ -961,72 +1018,245 @@ export default function ProfileUI({
             </div>
 
             {/* Research metrics — placeholders (data not in DB yet) */}
-            <div className="bg-card rounded-2xl border border-border shadow-sm p-5">
-              <h3 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
-                <BarChart2 className="w-4 h-4 text-primary" /> Research Metrics
-              </h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {[
-                  {
-                    label: "Publications",
-                    value: "—",
-                    cls: "text-violet-600 bg-violet-50",
-                    icon: FileText,
-                  },
-                  {
-                    label: "Collaborations",
-                    value: "—",
-                    cls: "text-blue-600 bg-blue-50",
-                    icon: Users,
-                  },
-                  {
-                    label: "Citations",
-                    value: "—",
-                    cls: "text-amber-600 bg-amber-50",
-                    icon: Award,
-                  },
-                  {
-                    label: "Projects",
-                    value: "—",
-                    cls: "text-emerald-600 bg-emerald-50",
-                    icon: GitBranch,
-                  },
-                  {
-                    label: "Saved Posts",
-                    value: "—",
-                    cls: "text-rose-600 bg-rose-50",
-                    icon: Bookmark,
-                  },
-                  {
-                    label: "h-index",
-                    value: "—",
-                    cls: "text-slate-600 bg-slate-100",
-                    icon: BarChart2,
-                  },
-                ].map(({ label, value, cls, icon: Icon }) => (
-                  <div
-                    key={label}
-                    className="bg-muted/40 rounded-2xl p-4 text-center border border-border hover:border-primary/20 transition-colors"
-                  >
-                    <div
-                      className={`w-10 h-10 rounded-xl ${cls} flex items-center justify-center mx-auto mb-2.5`}
-                    >
-                      <Icon className="w-5 h-5" />
-                    </div>
-                    <p className="text-2xl font-extrabold text-foreground leading-none">
-                      {value}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1 font-medium">
-                      {label}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              <p className="text-[11px] text-muted-foreground mt-3 italic">
-                These metrics will populate as your activity grows on
-                ResearchGram.
-              </p>
-            </div>
+            {/* Research metrics */}
+<div className="bg-card rounded-2xl border border-border shadow-sm p-5">
+  <div className="flex items-center justify-between gap-3 mb-4">
+  <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+    <BarChart2 className="w-4 h-4 text-primary" /> Research Metrics
+  </h3>
+
+  <div className="flex items-center gap-2">
+    {orcidId && (
+      <a
+        href={`https://orcid.org/${orcidId}`}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-[11px] font-bold text-muted-foreground hover:border-primary/30 hover:text-primary"
+      >
+        ORCID
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    )}
+
+    <button
+      type="button"
+      onClick={handleSyncExternalMetrics}
+      disabled={syncingMetrics || !orcidId}
+      className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-[11px] font-bold text-white transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      <RefreshCcw
+        className={`h-3 w-3 ${syncingMetrics ? "animate-spin" : ""}`}
+      />
+      {syncingMetrics ? "Syncing" : "Sync"}
+    </button>
+  </div>
+</div>
+
+  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+    {[
+      {
+        label: "Publications",
+        value: externalPublicationCount,
+        cls: "text-violet-600 bg-violet-50",
+        icon: FileText,
+      },
+      {
+        label: "Collaborations",
+        value: "—",
+        cls: "text-blue-600 bg-blue-50",
+        icon: Users,
+      },
+      {
+        label: "Citations",
+        value: externalCitationCount,
+        cls: "text-amber-600 bg-amber-50",
+        icon: Award,
+      },
+      {
+        label: "Projects",
+        value: "—",
+        cls: "text-emerald-600 bg-emerald-50",
+        icon: GitBranch,
+      },
+      {
+        label: "Saved Posts",
+        value: "—",
+        cls: "text-rose-600 bg-rose-50",
+        icon: Bookmark,
+      },
+      {
+        label: "h-index",
+        value: externalHIndex,
+        cls: "text-slate-600 bg-slate-100",
+        icon: BarChart2,
+      },
+    ].map(({ label, value, cls, icon: Icon }) => (
+      <div
+        key={label}
+        className="bg-muted/40 rounded-2xl p-4 text-center border border-border hover:border-primary/20 transition-colors"
+      >
+        <div
+          className={`w-10 h-10 rounded-xl ${cls} flex items-center justify-center mx-auto mb-2.5`}
+        >
+          <Icon className="w-5 h-5" />
+        </div>
+
+        <p className="text-2xl font-extrabold text-foreground leading-none">
+          {typeof value === "number" ? value : value}
+        </p>
+
+        <p className="text-xs text-muted-foreground mt-1 font-medium">
+          {label}
+        </p>
+      </div>
+    ))}
+  </div>
+
+  <p className="text-[11px] text-muted-foreground mt-3 italic">
+    External metrics sync: {formatSyncTime(externalMetricsSyncedAt)}.
+    Citation-based values can be updated later using ORCID and external
+    publication indexes.
+  </p>
+</div>
+
+
+
+
+{/* External research profiles */}
+<div className="bg-card rounded-2xl border border-border shadow-sm p-5">
+  <div className="flex items-center justify-between mb-4">
+    <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+      <Globe className="w-4 h-4 text-primary" /> External Research Profiles
+    </h3>
+
+    {!editMode && (
+      <button
+        onClick={() => setEditMode(true)}
+        className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
+      >
+        <Edit3 className="w-3 h-3" /> Edit
+      </button>
+    )}
+  </div>
+
+  {editMode ? (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-[11px] font-bold text-muted-foreground uppercase tracking-wide mb-1.5">
+          ORCID iD
+        </label>
+        <input
+          type="text"
+          value={orcidId}
+          onChange={(e) => setOrcidId(e.target.value)}
+          placeholder="0000-0002-1825-0097"
+          className="w-full text-sm px-3 py-2 bg-muted rounded-xl border border-border focus:border-primary focus:bg-white focus:outline-none transition-all"
+        />
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Enter only your ORCID iD or full ORCID URL.
+        </p>
+      </div>
+
+      <div>
+        <label className="block text-[11px] font-bold text-muted-foreground uppercase tracking-wide mb-1.5">
+          Google Scholar Profile URL
+        </label>
+        <input
+          type="url"
+          value={googleScholarUrl}
+          onChange={(e) => setGoogleScholarUrl(e.target.value)}
+          placeholder="https://scholar.google.com/citations?user=..."
+          className="w-full text-sm px-3 py-2 bg-muted rounded-xl border border-border focus:border-primary focus:bg-white focus:outline-none transition-all"
+        />
+      </div>
+
+      <div>
+        <label className="block text-[11px] font-bold text-muted-foreground uppercase tracking-wide mb-1.5">
+          ResearchGate Profile URL
+        </label>
+        <input
+          type="url"
+          value={researchGateUrl}
+          onChange={(e) => setResearchGateUrl(e.target.value)}
+          placeholder="https://www.researchgate.net/profile/..."
+          className="w-full text-sm px-3 py-2 bg-muted rounded-xl border border-border focus:border-primary focus:bg-white focus:outline-none transition-all"
+        />
+      </div>
+
+      <div>
+        <label className="block text-[11px] font-bold text-muted-foreground uppercase tracking-wide mb-1.5">
+          Personal Website / Portfolio
+        </label>
+        <input
+          type="url"
+          value={personalWebsiteUrl}
+          onChange={(e) => setPersonalWebsiteUrl(e.target.value)}
+          placeholder="https://your-website.com"
+          className="w-full text-sm px-3 py-2 bg-muted rounded-xl border border-border focus:border-primary focus:bg-white focus:outline-none transition-all"
+        />
+      </div>
+    </div>
+  ) : (
+    <div className="space-y-2">
+      {[
+        {
+          label: "ORCID",
+          value: orcidId,
+          href: orcidId ? `https://orcid.org/${orcidId}` : "",
+        },
+        {
+          label: "Google Scholar",
+          value: googleScholarUrl,
+          href: normalizeUrl(googleScholarUrl),
+        },
+        {
+          label: "ResearchGate",
+          value: researchGateUrl,
+          href: normalizeUrl(researchGateUrl),
+        },
+        {
+          label: "Website",
+          value: personalWebsiteUrl,
+          href: normalizeUrl(personalWebsiteUrl),
+        },
+      ]
+        .filter((item) => item.value)
+        .map((item) => (
+          <a
+            key={item.label}
+            href={item.href}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-between gap-3 rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm font-semibold text-foreground transition-colors hover:border-primary/30 hover:bg-accent hover:text-primary"
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <Link2 className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+              <span className="truncate">{item.label}</span>
+            </span>
+            <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
+          </a>
+        ))}
+
+      {!orcidId &&
+        !googleScholarUrl &&
+        !researchGateUrl &&
+        !personalWebsiteUrl && (
+          <p className="text-sm text-muted-foreground italic">
+            No external research profiles added yet.
+          </p>
+        )}
+    </div>
+  )}
+</div>
+
+
+
+
+
+
+
+
+
 
             {/* Mentorship — soft promo card */}
             <div
